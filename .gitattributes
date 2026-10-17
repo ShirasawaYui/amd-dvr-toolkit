@@ -1,0 +1,5 @@
+* text=auto eol=crlf
+*.py text eol=lf
+*.md text eol=lf
+*.cdb text eol=lf
+LICENSE text eol=lf

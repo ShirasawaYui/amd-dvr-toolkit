@@ -1,0 +1,10 @@
+# 运行期生成的文件（请勿提交）
+backup/
+*.bak
+last_fix_state.json
+last_fix_edit.json
+last_manifest_edit.json
+restore_state.json
+unblock_*.log
+__pycache__/
+*.pyc

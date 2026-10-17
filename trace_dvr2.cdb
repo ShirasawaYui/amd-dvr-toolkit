@@ -1,0 +1,12 @@
+.echo DVR_REQUEST_TRACE_V2
+r @$t19=0
+r @$t1=0
+r @$t0=0
+r @$t2=0
+bp0 /1 AMDRSServ+0x43a5e "r @$t19=@$tid; r @$t1=0; .printf \"REQUEST_BEGIN tid=%x\\n\", @$tid; gc"
+bp1 AMDRSServ+0x37474 ".if (@$tid == @$t19) { r @$t0=@rcx; r @$t2=@rdx; r @$t1=@$t1+1; .if (@$t1 == 1) { .printf \"FIRSTCALL hwnd=%p buf=%p r8d=%x rsp=%p\\n\", @rcx, @rdx, @r8d, @rsp; .printf \"stackbase=%p stacklimit=%p\\n\", poi(@$teb+8), poi(@$teb+0x10) }; .if (@$t1 > 3) { r r8=0x100 }; }; gc"
+bp2 AMDRSServ+0x3747a ".if (@$tid == @$t19) { .printf \"CLS n=%u hwnd=%p count=%u err=%x\\n\", @$t1, @$t0, @eax, dwo(@$teb+0x68); du @$t2 L0n18; }; gc"
+bp3 AMDRSServ+0x43a6d ".printf \"ENUM_END eax=%u calls=%u\\n\", @eax, @$t1; .echo TRACE2_COMPLETE_DETACHING; bc *; qd"
+bl
+.echo TRACE_READY_CLICK_RECORD_ONCE
+g
