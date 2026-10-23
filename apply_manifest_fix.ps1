@@ -65,7 +65,7 @@ $stateFile = Join-Path $PSScriptRoot 'last_fix_state.json'
 
 $resultPy  = Join-Path $PSScriptRoot 'last_fix_edit.json'
 
-$origSha   = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'
+# 原版 sha 不硬编码：见步骤 0（由构建表按当前文件自动识别）。
 
 
 
@@ -267,7 +267,27 @@ if (-not (Test-Path -LiteralPath $pyScript)) { Write-Host '缺少 patch_manifest
 
 
 
-# 0) 原版备份门槛
+# 0) 识别构建 + 原版备份门槛（原版 sha 由构建表按当前文件给出）
+
+& $py $pyScript --check --out $resultPy | Write-Host
+
+$st0 = Get-Content -LiteralPath $resultPy -Raw -Encoding UTF8 | ConvertFrom-Json
+
+if ($st0.result -eq 'unexpected' -or -not $st0.sha_orig) {
+
+    $result.message = 'aborted_state: ' + $st0.result
+
+    Save-State
+
+    Write-Host '文件状态不符合预期（如 AMD 已更新程序，或检查失败），未做任何修改。请保存本窗口输出。' -ForegroundColor Red
+
+    Read-Host '按回车关闭'
+
+    exit
+
+}
+
+$origSha = $st0.sha_orig
 
 $orig = $null
 
@@ -285,7 +305,7 @@ if (-not $orig) {
 
     Save-State
 
-    Write-Host '未找到原版备份（backup 目录中没有与原版吻合的 .bak）。未做任何修改。' -ForegroundColor Red
+    Write-Host ('未找到原版备份（backup 目录中没有与构建 ' + $st0.build + ' 吻合的 .bak）。未做任何修改。') -ForegroundColor Red
 
     Read-Host '按回车关闭'
 
@@ -303,6 +323,8 @@ $st = Get-Content -LiteralPath $resultPy -Raw -Encoding UTF8 | ConvertFrom-Json
 
 $result.initial_state = $st.result
 
+$result.build = $st.build
+
 Write-Host ('当前状态: ' + $st.result + ' | ' + $st.message)
 
 if ($st.result -notin @('original_untouched', 'needs_manifest_fix', 'already_fixed')) {
@@ -311,7 +333,7 @@ if ($st.result -notin @('original_untouched', 'needs_manifest_fix', 'already_fix
 
     Save-State
 
-    Write-Host '文件状态不符合预期（如 AMD 已更新程序），未做任何修改。请保存本窗口输出。' -ForegroundColor Red
+    Write-Host '文件状态不符合预期（如 AMD 已更新程序，或检查失败），未做任何修改。请保存本窗口输出。' -ForegroundColor Red
 
     Read-Host '按回车关闭'
 

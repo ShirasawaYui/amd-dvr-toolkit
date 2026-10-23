@@ -35,14 +35,20 @@ import xml.dom.minidom as MD
 
 DEFAULT_EXE = r"C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe"
 
-# 代际记录（两代文件等长 2628872 字节，补丁点、函数帧与清单位置完全一致；
-# 逐字节差异仅 0.05%，全部是版本串与签名哈希——AMD 未修改该处代码）：
-#   26.20.15.02（2026-10-17）orig 0f28b308.. / patched 1ae3fcc5.. / fixed 72099cb6..
-#   26.20.15.07（2026-10-23）orig ff26b09a.. / patched 0dc22efa.. / fixed ae4f3058..
-# 当前门禁：26.20.15.07。适配旧版或其他新版本时，按同样三项 SHA 更新即可。
-SHA_ORIGINAL = "ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528"
-SHA_PATCHED = "0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e"
-SHA_FIXED = "ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e"
+# 已知构建表：每个驱动版本对应一组 (orig / patched / fixed) sha256。
+# 两代文件等长（2628872 字节），补丁点、函数帧与清单位置完全一致；
+# 逐字节差异仅 0.05%，全部是版本串与签名哈希——AMD 未修改该处代码。
+# 新增构建时在表里加一项即可；apply 会按识别出的构建校验中间态与终态。
+BUILDS = [
+    {"name": "26.20.15.02",
+     "orig": "0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9",
+     "patched": "1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba",
+     "fixed": "72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840"},
+    {"name": "26.20.15.07",
+     "orig": "ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528",
+     "patched": "0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e",
+     "fixed": "ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e"},
+]
 
 LENGTH_OFFSET = 0x3686B
 LENGTH_OLD = b"\x08\x02"
@@ -69,25 +75,27 @@ def manifest_region(data: bytes):
 
 
 def inspect(data: bytes):
+    """返回 (state, message, build)；build 为命中的构建项，unexpected 时为 None。"""
     h = sha256(data)
     n_old, n_new = data.count(MAN_OLD), data.count(MAN_NEW)
     at = data[LENGTH_OFFSET:LENGTH_OFFSET + 2]
-    if h == SHA_FIXED and at == LENGTH_NEW and n_old == 0 and n_new == 1:
-        return "already_fixed", "两步修改均已完成，无需动作"
-    if h == SHA_ORIGINAL and at == LENGTH_OLD and n_old == 1 and n_new == 0:
-        return "original_untouched", "原始文件：将一并应用 2 字节补丁与清单修复"
-    if h == SHA_PATCHED and at == LENGTH_NEW and n_old == 1 and n_new == 0:
-        return "needs_manifest_fix", "已打 2 字节补丁，待修复清单（uiAccess true->false）"
+    for b in BUILDS:
+        if h == b["fixed"] and at == LENGTH_NEW and n_old == 0 and n_new == 1:
+            return "already_fixed", "两步修改均已完成，无需动作（%s）" % b["name"], b
+        if h == b["orig"] and at == LENGTH_OLD and n_old == 1 and n_new == 0:
+            return "original_untouched", "原始文件（%s）：将一并应用 2 字节补丁与清单修复" % b["name"], b
+        if h == b["patched"] and at == LENGTH_NEW and n_old == 1 and n_new == 0:
+            return "needs_manifest_fix", "已打 2 字节补丁（%s），待修复清单（uiAccess true->false）" % b["name"], b
     return "unexpected", ("状态与已知版本不符（sha=%s..., 长度位=%s, uiAccess旧=%d/新=%d）"
-                          % (h[:12], at.hex(" "), n_old, n_new))
+                          % (h[:12], at.hex(" "), n_old, n_new)), None
 
 
-def build_final(data: bytes, state: str):
+def build_final(data: bytes, state: str, build):
     """在内存中构建最终文件并全面校验（长度、标记、XML、终态 sha），返回 (bytes, steps)。"""
     cur, steps = data, []
     if state == "original_untouched":
         cur = cur[:LENGTH_OFFSET] + LENGTH_NEW + cur[LENGTH_OFFSET + 2:]
-        if sha256(cur) != SHA_PATCHED:
+        if sha256(cur) != build["patched"]:
             raise RuntimeError("length-step intermediate verify failed")
         steps.append("length 0x3686B: 08 02 -> 00 01")
     i = cur.find(MAN_OLD)
@@ -102,7 +110,7 @@ def build_final(data: bytes, state: str):
         if not reg:
             raise RuntimeError("manifest region lost")
         MD.parseString(cur[reg[0]:reg[0] + reg[1]])
-    if sha256(cur) != SHA_FIXED:
+    if sha256(cur) != build["fixed"]:
         raise RuntimeError("final sha mismatch (expected fixed build)")
     return cur, steps
 
@@ -120,11 +128,13 @@ def main():
     res = {"mode": "apply" if a.apply else "check", "exe": str(exe), "steps": []}
     try:
         data = exe.read_bytes()
-        state, msg = inspect(data)
-        res.update(result=state, message=msg, sha_before=sha256(data))
+        state, msg, build = inspect(data)
+        res.update(result=state, message=msg, sha_before=sha256(data),
+                   build=(build["name"] if build else None),
+                   sha_orig=(build["orig"] if build else None))
 
         if a.apply and state in ("original_untouched", "needs_manifest_fix"):
-            final, steps = build_final(data, state)
+            final, steps = build_final(data, state, build)
             res["steps"] = steps
             res["sha_after"] = sha256(final)
             writes = []

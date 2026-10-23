@@ -1,7 +1,7 @@
 ﻿# ============================================================
 #  恢复原版 AMDRSServ.exe（撤销 2 字节补丁与清单修改）
-#  从 backup 目录选择 sha256 = ff26b0…3528 的最新备份覆盖回去，
-#  （即 26.20.15.07 对应的原版；旧版 26.20.15.02 的备份即使存在也不参与还原）
+#  按当前文件的构建自动选择对应原版：从 backup 目录找 sha 吻合的备份覆盖回去
+#  （内置 26.20.15.02 / 26.20.15.07 两代；其他版本会拒绝动作）
 #  并用 RSServCmd restart（经临时计划任务，普通权限）重启引擎。
 #  仅在需要彻底回到原始状态时使用。
 # ============================================================
@@ -19,7 +19,11 @@ $target    = 'C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe'
 $engineCmd = 'C:\Program Files\AMD\CNext\CNext\RSServCmd.exe'
 $backupDir = Join-Path $PSScriptRoot 'backup'
 $stateFile = Join-Path $PSScriptRoot 'restore_state.json'
-$origSha   = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'
+# 已知构建表：按当前文件的 sha 判断属于哪一代，再用该代的原版备份还原。
+$builds = @(
+    @{ name = '26.20.15.02'; orig = '0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9'; patched = '1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba'; fixed = '72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840' },
+    @{ name = '26.20.15.07'; orig = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'; patched = '0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e'; fixed = 'ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e' }
+)
 
 function Save-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
 function Test-Writable {
@@ -62,9 +66,24 @@ function Start-EngineTask {
     }
 }
 
-$state = [ordered]@{ time_start = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); action = 'restore_original'; backup_used = $null; engine_pid = $null; message = '' }
+$state = [ordered]@{ time_start = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); action = 'restore_original'; build = $null; backup_used = $null; engine_pid = $null; message = '' }
 
 Write-Host '===== 恢复原版 AMDRSServ.exe =====' -ForegroundColor Cyan
+$curSha = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLower()
+$build = $null
+foreach ($b in $builds) {
+    if ($curSha -eq $b.orig -or $curSha -eq $b.patched -or $curSha -eq $b.fixed) { $build = $b; break }
+}
+if (-not $build) {
+    $state.message = 'unknown_build'
+    Save-State $state
+    Write-Host '当前文件与已知构建均不匹配（可能 AMD 已更新），无法确定该还原哪一代原版。未做任何修改。' -ForegroundColor Red
+    Read-Host '按回车关闭'
+    exit
+}
+$origSha = $build.orig
+$state.build = $build.name
+Write-Host ('当前构建: ' + $build.name)
 $orig = $null
 foreach ($b in (Get-ChildItem -LiteralPath $backupDir -Filter '*.bak' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
     $h = (Get-FileHash -LiteralPath $b.FullName -Algorithm SHA256).Hash.ToLower()
@@ -73,7 +92,7 @@ foreach ($b in (Get-ChildItem -LiteralPath $backupDir -Filter '*.bak' -ErrorActi
 if (-not $orig) {
     $state.message = 'no_valid_backup'
     Save-State $state
-    Write-Host '未找到有效的原始备份，未做任何修改。' -ForegroundColor Red
+    Write-Host ('未找到构建 ' + $build.name + ' 的有效原始备份，未做任何修改。') -ForegroundColor Red
     Read-Host '按回车关闭'
     exit
 }
