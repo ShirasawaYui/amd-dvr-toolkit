@@ -1,6 +1,7 @@
 ﻿# ============================================================
 #  恢复原版 AMDRSServ.exe（撤销 2 字节补丁与清单修改）
-#  从 backup 目录选择 sha256 = 0f28b3…50c9 的最新备份覆盖回去，
+#  从 backup 目录选择 sha256 = ff26b0…3528 的最新备份覆盖回去，
+#  （即 26.20.15.07 对应的原版；旧版 26.20.15.02 的备份即使存在也不参与还原）
 #  并用 RSServCmd restart（经临时计划任务，普通权限）重启引擎。
 #  仅在需要彻底回到原始状态时使用。
 # ============================================================
@@ -18,7 +19,7 @@ $target    = 'C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe'
 $engineCmd = 'C:\Program Files\AMD\CNext\CNext\RSServCmd.exe'
 $backupDir = Join-Path $PSScriptRoot 'backup'
 $stateFile = Join-Path $PSScriptRoot 'restore_state.json'
-$origSha   = '0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9'
+$origSha   = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'
 
 function Save-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
 function Test-Writable {

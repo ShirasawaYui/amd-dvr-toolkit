@@ -3,8 +3,8 @@
 对指定 PID 的 AMDRSServ.exe 做只读检查：模块清单、代码与磁盘比对、
 窗口枚举能力。需要管理员权限；依赖 pefile。
 用法：python inspect_dvr_readonly.py --pid <PID> --output out.json
-注意：其中的 RVA 偏移针对 Adrenalin 26.20.15.02 的 AMDRSServ.exe，
-其他版本结果可能不符。
+注意：其中的 RVA 偏移针对 Adrenalin 26.20.15.02 / 26.20.15.07 的 AMDRSServ.exe
+（两代在本 bug 相关代码上完全同构），其他版本结果可能不符。
 """
 import argparse
 import ctypes as C

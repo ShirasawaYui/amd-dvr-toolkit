@@ -35,9 +35,14 @@ import xml.dom.minidom as MD
 
 DEFAULT_EXE = r"C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe"
 
-SHA_ORIGINAL = "0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9"
-SHA_PATCHED = "1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba"
-SHA_FIXED = "72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840"
+# 代际记录（两代文件等长 2628872 字节，补丁点、函数帧与清单位置完全一致；
+# 逐字节差异仅 0.05%，全部是版本串与签名哈希——AMD 未修改该处代码）：
+#   26.20.15.02（2026-10-17）orig 0f28b308.. / patched 1ae3fcc5.. / fixed 72099cb6..
+#   26.20.15.07（2026-10-23）orig ff26b09a.. / patched 0dc22efa.. / fixed ae4f3058..
+# 当前门禁：26.20.15.07。适配旧版或其他新版本时，按同样三项 SHA 更新即可。
+SHA_ORIGINAL = "ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528"
+SHA_PATCHED = "0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e"
+SHA_FIXED = "ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e"
 
 LENGTH_OFFSET = 0x3686B
 LENGTH_OLD = b"\x08\x02"

@@ -65,7 +65,7 @@ $stateFile = Join-Path $PSScriptRoot 'last_fix_state.json'
 
 $resultPy  = Join-Path $PSScriptRoot 'last_fix_edit.json'
 
-$origSha   = '0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9'
+$origSha   = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'
 
 
 
@@ -467,9 +467,11 @@ if ($alive) {
 
     if ($result.ui_stopped) { Write-Host '提示: 本次重启过 AMD 界面；如语言变英文，可在设置中切回。' -ForegroundColor Yellow }
 
-    Write-Host '提示：本次启动的引擎可能带管理员令牌（日志普通权限或不可读，功能不受影响）；下次开机自动恢复日常形态。' -ForegroundColor Yellow
+    Write-Host '⚠ 重要：本次启动的引擎带管理员令牌，这个形态下录制不会正常（实测）。' -ForegroundColor Yellow
 
-    Write-Host '请先不要点击录制，先确认引擎与界面已正常启动。' -ForegroundColor Cyan
+    Write-Host '   请现在重启电脑，开机后再试录；引擎会自动以普通权限拉起，功能才生效。' -ForegroundColor Yellow
+
+    Write-Host '   （管理员形态引擎的 dvrlog 普通权限也读不到，无法取证。）' -ForegroundColor DarkGray
 
     Read-Host '按回车关闭'
 
