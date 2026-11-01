@@ -22,7 +22,8 @@ $stateFile = Join-Path $PSScriptRoot 'restore_state.json'
 # 已知构建表：按当前文件的 sha 判断属于哪一代，再用该代的原版备份还原。
 $builds = @(
     @{ name = '26.20.15.02'; orig = '0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9'; patched = '1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba'; fixed = '72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840' },
-    @{ name = '26.20.15.07'; orig = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'; patched = '0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e'; fixed = 'ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e' }
+    @{ name = '26.20.15.07'; orig = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'; patched = '0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e'; fixed = 'ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e' },
+    @{ name = '26.20.15.12'; orig = '463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf'; patched = '4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a'; fixed = '10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1' }
 )
 
 function Save-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
