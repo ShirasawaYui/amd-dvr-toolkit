@@ -36,9 +36,9 @@ import xml.dom.minidom as MD
 DEFAULT_EXE = r"C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe"
 
 # 已知构建表：每个驱动版本对应一组 (orig / patched / fixed) sha256。
-# 三代文件的补丁点（0x3686B）与清单位置（0x27C03C）完全一致；.02/.07 等长 2628872，
-# .12 为 2628880 —— 多出的 8 字节全在文件末尾签名区（0x281D08 之后，均为 00 填充），
-# 七个节区的 off/size/va 完全一致，代码段未动。
+# 补丁点（0x3686B）与清单位置（0x27C03C）四代完全一致；.02/.07 = 2628872、
+# .12 = 2628880、.16 = 2627480，差异全部落在文件末尾的 Authenticode 签名区，
+# 七个节区的 off/size/va 一直未变，代码段零改动。
 # 新增构建时在表里加一项即可；apply 会按识别出的构建校验中间态与终态。
 BUILDS = [
     {"name": "26.20.15.02",
@@ -53,6 +53,10 @@ BUILDS = [
      "orig": "463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf",
      "patched": "4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a",
      "fixed": "10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1"},
+    {"name": "26.20.15.16",
+     "orig": "5808eed28beea6d9d218ce61905bec617d2cf9e34462f9132f36629a4fbbb6d5",
+     "patched": "0d8379ce16844321efb96ed9d03e019249216c613821a6816fef1b952707a883",
+     "fixed": "c726d431ba042c75d7b956abb079af3dab294a218893bc08b0b37b1c9b7fe404"},
 ]
 
 LENGTH_OFFSET = 0x3686B

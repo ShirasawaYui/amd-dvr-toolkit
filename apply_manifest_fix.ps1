@@ -301,11 +301,39 @@ foreach ($b in (Get-ChildItem -LiteralPath $backupDir -Filter '*.bak' -ErrorActi
 
 if (-not $orig) {
 
+    # 首次使用兜底：当前文件还是未改动的原版时，自动创建原版备份
+
+    if ($st0.result -eq 'original_untouched') {
+
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+
+        $bakName = 'AMDRSServ.exe.orig.' + $ts + '.bak'
+
+        Copy-Item -LiteralPath $target -Destination (Join-Path $backupDir $bakName) -Force
+
+        $h = (Get-FileHash -LiteralPath (Join-Path $backupDir $bakName) -Algorithm SHA256).Hash.ToLower()
+
+        if ($h -eq $origSha) {
+
+            $orig = Get-Item -LiteralPath (Join-Path $backupDir $bakName)
+
+            Add-Content -LiteralPath (Join-Path $backupDir 'backup_info.txt') -Value ('orig    {0}  build={1}  sha256={2}  (自动备份)' -f $ts, $st0.build, $h.ToUpper())
+
+            Write-Host ('backup 原为空，已自动创建原版备份：' + $bakName) -ForegroundColor Green
+
+        }
+
+    }
+
+}
+
+if (-not $orig) {
+
     $result.message = 'no_original_backup'
 
     Save-State
 
-    Write-Host ('未找到原版备份（backup 目录中没有与构建 ' + $st0.build + ' 吻合的 .bak）。未做任何修改。') -ForegroundColor Red
+    Write-Host ('未找到原版备份（backup 目录中没有与构建 ' + $st0.build + ' 吻合的 .bak），且当前文件不是原版、无法自动备份。未做任何修改。') -ForegroundColor Red
 
     Read-Host '按回车关闭'
 

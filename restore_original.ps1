@@ -1,7 +1,7 @@
 ﻿# ============================================================
 #  恢复原版 AMDRSServ.exe（撤销 2 字节补丁与清单修改）
 #  按当前文件的构建自动选择对应原版：从 backup 目录找 sha 吻合的备份覆盖回去
-#  （内置 26.20.15.02 / 26.20.15.07 两代；其他版本会拒绝动作）
+#  （内置 26.20.15.02 / .07 / .12 / .16 四代；其他版本会拒绝动作）
 #  并用 RSServCmd restart（经临时计划任务，普通权限）重启引擎。
 #  仅在需要彻底回到原始状态时使用。
 # ============================================================
@@ -23,7 +23,8 @@ $stateFile = Join-Path $PSScriptRoot 'restore_state.json'
 $builds = @(
     @{ name = '26.20.15.02'; orig = '0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9'; patched = '1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba'; fixed = '72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840' },
     @{ name = '26.20.15.07'; orig = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'; patched = '0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e'; fixed = 'ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e' },
-    @{ name = '26.20.15.12'; orig = '463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf'; patched = '4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a'; fixed = '10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1' }
+    @{ name = '26.20.15.12'; orig = '463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf'; patched = '4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a'; fixed = '10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1' },
+    @{ name = '26.20.15.16'; orig = '5808eed28beea6d9d218ce61905bec617d2cf9e34462f9132f36629a4fbbb6d5'; patched = '0d8379ce16844321efb96ed9d03e019249216c613821a6816fef1b952707a883'; fixed = 'c726d431ba042c75d7b956abb079af3dab294a218893bc08b0b37b1c9b7fe404' }
 )
 
 function Save-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
