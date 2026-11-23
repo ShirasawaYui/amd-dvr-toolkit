@@ -52,7 +52,7 @@ Failed to send scene conversion to CN
 
 （该错误串全网零命中，属 AMD 未公开的内部错误。）
 
-⚠ 引擎日志默认**不生成**：`dvrlog` 只在注册表 `HKCU\SOFTWARE\AMD\DVR\LOG` 值**存在**时写（=1 或 =0 都写，值整个缺失则完全不写）。需要取证时先用「切换DVR日志开关.cmd」开启日志（见第九节）。
+⚠ 引擎日志默认**不生成**，开关分两代（2026-11-23 实测）：旧代（≤ 26.20.15.x）看 `HKCU\SOFTWARE\AMD\DVR` 的 **`LOG` 值**——存在即写（`=1`/`=0` 都写），值缺失则完全不写；新代（≥ 26.20.29.02）看 `HKCU\SOFTWARE\AMD\DVR\LOG` **子键**的 `log_enabled`——`1` 写、`0` 停，**旧值完全失效**。需要取证时先用「切换DVR日志开关.cmd」开启（它对两处同时写入，见第九节）。
 
 注意：还有另一种表象完全相同、但日志里**没有任何** `WMCN_` / `Failed` 行的成因（音频枚举导致引擎僵死），判据见第九节。
 
@@ -94,7 +94,7 @@ Failed to send scene conversion to CN
 
 - 实测环境：Windows 11 + AMD Software: Adrenalin Edition，驱动 **26.20.29.02 / 26.20.15.16 / .12 / .07 / .02** 五代均已实测；RX 7900 XT（RDNA3）。
 - 依赖：PowerShell 5.1+（改写系统文件的脚本自动请求 UAC 提权）；Python 3.8+ 且 **`pefile` 必需**——安装命令与验证方式见文首「使用前必装」。
-  入口选解释器的顺序：PATH 上的 `python` / `py` / `python3` → 常见用户级安装路径（`%LOCALAPPDATA%\Programs\Python\Python*`、`…\binaries\python\versions\*`、`…\envs\default\Scripts`），**逐个试跑 `import pefile`，第一个成功的才采用**；全都不可用时列出每个候选的失败原因并中止，不会带着缺依赖的解释器往下跑。想手动指定就设环境变量 `DVR_TOOLKIT_PYTHON=<python.exe 路径>`。
+  入口选解释器的顺序：PATH 上的 `python` / `py` / `python3` → 常见用户级安装路径（`%LOCALAPPDATA%\Programs\Python\Python*`、`…\binaries\python\versions\*`、`…\envs\default\Scripts`），**逐个试跑 `import pefile`，第一个成功的才采用**；全都不可用时列出每个候选的失败原因并中止，不会带着缺依赖的解释器往下跑。想手动指定就设环境变量 `DVR_TOOLKIT_PYTHON=⟨python.exe 路径⟩`。
 - 脚本按 sha256 精确识别文件状态与构建代际（清单内置 **26.20.29.02 / 26.20.15.02 / .07 / .12 / .16** 五代），**只对已验证的构建生效**；AMD 更新 `AMDRSServ.exe` 后补丁会失效，需重新适配（见第八节）。
 - 其他 AMD 版本不一定适用；不适配时脚本会中止并说明，不会强行修改。
 
@@ -131,7 +131,7 @@ Failed to send scene conversion to CN
 | 文件 | 实际执行 | 说明 |
 | --- | --- | --- |
 | 注入引擎修复补丁.cmd | apply_manifest_fix.ps1 | **主力修复**：状态检查 → 必要时停进程解锁 → 等长改写（补丁+清单）→ 普通权限重启引擎 → 校验存活；失败自动回滚。首次运行自动创建原版备份。幂等。 |
-| 重启引擎和界面.cmd | repair_capture_order.ps1 | **启动顺序校正**：关 AMD 界面 → 关引擎 → 等引擎自己回来并等 15 秒就绪 → **经 `cncmd startwithdelay` 重开界面**（与开机自启同一路径）。就绪判据是「界面进程 + `cncmd watch <pid>` 已建立」，**不是主窗口可见**：界面正常启动后停在托盘、主窗口隐藏或尚未创建，`MainWindowHandle` 恒为 0。**判据全在后台完成，不主动弹出窗口**（`cncmd show` 会让界面变英文，双击托盘打开才是中文）。**不读日志、不改注册表、不需要管理员**。专治「重启后点录制毫无反应、连杀引擎也无效」。 |
+| 重启引擎和界面.cmd | repair_capture_order.ps1 | **启动顺序校正**：关 AMD 界面 → 关引擎 → 等引擎自己回来并等 15 秒就绪 → **经 `cncmd startwithdelay` 重开界面**（与开机自启同一路径）。就绪判据是「界面进程 + `cncmd watch ⟨pid⟩` 已建立」，**不是主窗口可见**：界面正常启动后停在托盘、主窗口隐藏或尚未创建，`MainWindowHandle` 恒为 0。**判据全在后台完成，不主动弹出窗口**（`cncmd show` 会让界面变英文，双击托盘打开才是中文）。**不读日志、不改注册表、不需要管理员**。专治「重启后点录制毫无反应、连杀引擎也无效」。 |
 | 恢复原版.cmd | restore_original.ps1 | 按当前文件的构建，从 `backup\` 找 sha 匹配的原版备份覆盖回去，并重启引擎。 |
 | 清理DVR日志.cmd | cleanup_dvr_logs.ps1 | 删除非当天的 dvrlog；自动保留最新一份与 15 分钟内写过的文件。需要连今天一起清时，命令行运行 `cleanup_dvr_logs.ps1 -All`。 |
 | 切换DVR日志开关.cmd | toggle_dvr_log.ps1 | 开/关 dvrlog，**同时处理两代门控**：旧代（≤26.20.15.x）看 `DVR` 键的 `LOG` 值——存在（=1 或 =0 都算）就写、删除才停；新代（≥26.20.29.02）看 `DVR\LOG` 子键的 `log_enabled`——1 写、0 停（两次受控重启实测，旧值在新代完全失效）。`-Action Status` 只读查看当前判据。 |
@@ -151,8 +151,8 @@ Failed to send scene conversion to CN
 
 | 文件 | 说明 |
 | --- | --- |
-| check_token.py | 读任意进程令牌：是否提权 / UIAccess / 完整性级别。用法：`python check_token.py <pid>` |
-| inspect_dvr_readonly.py | 管理员只读取证：模块清单、代码与磁盘比对、窗口枚举。用法：`python inspect_dvr_readonly.py --pid <PID> --output out.json`；依赖 pefile；RVA 偏移针对 26.20.15.02 / .07 / .12 / .16（四代同构）。`.29.02` 起补丁点漂移到 `0x3669B`，若用于该构建需按 `build_manifest.json` 的 `patch_points` 调整。 |
+| check_token.py | 读任意进程令牌：是否提权 / UIAccess / 完整性级别。用法：`python check_token.py ⟨pid⟩` |
+| inspect_dvr_readonly.py | 管理员只读取证：模块清单、代码与磁盘比对、窗口枚举。用法：`python inspect_dvr_readonly.py --pid ⟨PID⟩ --output out.json`；依赖 pefile；RVA 偏移针对 26.20.15.02 / .07 / .12 / .16（四代同构）。`.29.02` 起补丁点漂移到 `0x3669B`，若用于该构建需按 `build_manifest.json` 的 `patch_points` 调整。 |
 
 ## 八、AMD 更新之后
 
@@ -173,7 +173,7 @@ Failed to send scene conversion to CN
 | A | 有 `Failed to send scene conversion to CN` | 类名读取越界（本工具包修的那个） | 补丁失效 → 重跑「注入引擎修复补丁.cmd」→ **重启电脑** |
 | B | **完全没有** `WMCN_` 开头的行、也没有 `Failed`，且麦克风录制开着、有 `AMF_FILE_NOT_OPEN` | 引擎已僵死（音频枚举失败），录制请求根本没发出去 | 见下方 B 组 |
 | C | 有 `SCENE_CONVERSION_DONE` 但没落盘 | 编码器 / 磁盘 / 开关问题 | 查输出目录、编码器设置 |
-| D | 没有 `WMCN_` / `Failed`，但引擎**看起来正常**（有 `Instant replay has been started`、日志持续在刷），**连杀引擎也无效** | 界面与引擎的控制通道没建立：最常见是界面**未经 `cncmd startwithdelay` 启动**（直启 `RadeonSoftware.exe`，或被杀后由非标准方式拉起），缺 `cncmd watch <pid>` 子进程 → 界面「按钮能点、点了不发命令」 | 双击「重启引擎和界面.cmd」；完成后界面停在托盘即可用（双击托盘打开是中文界面），**不要直接启动 `RadeonSoftware.exe`，也不要用 `cncmd show`**（会把界面切成英文） |
+| D | 没有 `WMCN_` / `Failed`，但引擎**看起来正常**（有 `Instant replay has been started`、日志持续在刷），**连杀引擎也无效** | 界面与引擎的控制通道没建立：最常见是界面**未经 `cncmd startwithdelay` 启动**（直启 `RadeonSoftware.exe`，或被杀后由非标准方式拉起），缺 `cncmd watch ⟨pid⟩` 子进程 → 界面「按钮能点、点了不发命令」 | 双击「重启引擎和界面.cmd」；完成后界面停在托盘即可用（双击托盘打开是中文界面），**不要直接启动 `RadeonSoftware.exe`，也不要用 `cncmd show`**（会把界面切成英文） |
 
 **B 与 D 怎么分**：两者日志都「干净」。B 的麦克风录制开着且有关键错误 `AMF_FILE_NOT_OPEN`，关麦即恢复；D 的引擎本身健康、关麦无效，**只有把界面和引擎一起按顺序重来才恢复**。
 
@@ -193,7 +193,7 @@ Failed to send scene conversion to CN
 2. 若脚本重启过 AMD 界面，**界面语言可能变成英文**——重开界面或重启电脑会自动恢复中文，所有设置不会丢。
 3. 桌面录制开关由你在 AMD 软件里控制。关着时点录制，AMD 会弹窗提示开启，属正常流程。
 4. **若不需要麦克风录制，建议保持关闭**——麦克风开启且音频设备不可枚举时，引擎会在冷启动后僵死（第九节 B 组），症状与补丁失效完全一样，极易误判。
-5. **「界面半瘫」来自启动方式，不是补丁问题、也不是竞态**（2026-11-23 实证）：界面必须经 `cncmd startwithdelay` 启动、并带一个 `cncmd watch <pid>` 子进程，才算与 DVR 引擎建立了控制通道（watch 分支内部执行 `RSServCmd.exe make dvr hide_ui`）。直接运行 `RadeonSoftware.exe` 会得到一个「按钮可点、点下去引擎零请求」的半瘫实例，杀引擎也救不回来（第九节 D 组）。处置：双击 **重启引擎和界面.cmd**——它先关界面、再关引擎，等守护进程把引擎拉回来后经 `cncmd startwithdelay` 重新拉起界面；**界面停在托盘就是已就绪**（托盘态主窗口本就不存在，不要等窗口出现）。需要看界面时双击托盘图标打开（这样打开是中文），不要用 `cncmd show`。
+5. **「界面半瘫」来自启动方式，不是补丁问题、也不是竞态**（2026-11-23 实证）：界面必须经 `cncmd startwithdelay` 启动、并带一个 `cncmd watch ⟨pid⟩` 子进程，才算与 DVR 引擎建立了控制通道（watch 分支内部执行 `RSServCmd.exe make dvr hide_ui`）。直接运行 `RadeonSoftware.exe` 会得到一个「按钮可点、点下去引擎零请求」的半瘫实例，杀引擎也救不回来（第九节 D 组）。处置：双击 **重启引擎和界面.cmd**——它先关界面、再关引擎，等守护进程把引擎拉回来后经 `cncmd startwithdelay` 重新拉起界面；**界面停在托盘就是已就绪**（托盘态主窗口本就不存在，不要等窗口出现）。需要看界面时双击托盘图标打开（这样打开是中文），不要用 `cncmd show`。
 
 ## 十一、注意事项
 
