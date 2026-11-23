@@ -1,71 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AMDRSServ.exe 修复器：2 字节长度补丁 + 清单 uiAccess 修复（统一入口）。
+"""AMDRSServ.exe 修复器（清单驱动版）：2 字节长度补丁 + 清单 uiAccess 修复。
 
-背景：
-  - 类名读取越界：偏移 0x3686B 处把 0x208(520字符) 改为 0x100(256字符)，
-    修复 998 越界导致的“静默失败”。
-  - uiAccess 门槛：声明 uiAccess="true" 的 exe 一旦签名失效，Windows 拒绝
-    启动（弹窗“从服务器返回了一个参照”）。因此 2 字节补丁必须配合清单修复。
+与旧版差异（P1 D04）：不再内嵌 BUILDS 硬编码表，统一从 build_manifest.json
+查询（dvr_core.load_manifest，fail-closed）。清单缺失/字段缺失/状态冲突/
+规则版本不支持时，--check 报 manifest_error 且 --apply 拒绝一切写入，
+禁止回退旧硬编码表。
+
+背景（详见修复报告 §15）：
+  - 类名读取越界：偏移 0x3686B 处把 0x208(520字符) 改为 0x100(256字符)
+  - uiAccess 门槛：签名失效后 uiAccess=true 会被 Windows 拒启，须同步改 false
 
 处理状态（自动识别；所有改写均为等长替换、文件大小不变）：
   - original_untouched ：原始文件 → --apply 一并完成两步
   - needs_manifest_fix ：已打 2 字节补丁、清单未改 → --apply 只改清单
   - already_fixed      ：两步均已完成 → 不动作
-  - unexpected         ：与已知版本不符（如 AMD 已更新程序）→ 拒绝动作
+  - unexpected / manifest_error ：拒绝动作
 
-两步改写：
-  1) 偏移 0x3686B：08 02 -> 00 01
-  2) 清单：uiAccess="true"></requestedExecutionLevel>\\r\\n
-         -> uiAccess="false"></requestedExecutionLevel>\\n（+1/-1 字节保持长度）
-
-用法: python patch_manifest.py --check|--apply [--exe PATH] --out X.json
-依赖: Python 3.8+；pefile 为可选依赖（安装后多一层清单资源区 XML 校验）。
+用法: python patch_manifest.py --check|--apply [--exe PATH] [--manifest PATH] --out X.json
 """
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 
-try:
-    import pefile
-except ImportError:  # pefile 为可选依赖：缺失时跳过清单资源区结构校验
-    pefile = None
+import pefile
 import xml.dom.minidom as MD
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dvr_core as core  # noqa: E402
+
 DEFAULT_EXE = r"C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe"
-
-# 已知构建表：每个驱动版本对应一组 (orig / patched / fixed) sha256。
-# 补丁点（0x3686B）与清单位置（0x27C03C）四代完全一致；.02/.07 = 2628872、
-# .12 = 2628880、.16 = 2627480，差异全部落在文件末尾的 Authenticode 签名区，
-# 七个节区的 off/size/va 一直未变，代码段零改动。
-# 新增构建时在表里加一项即可；apply 会按识别出的构建校验中间态与终态。
-BUILDS = [
-    {"name": "26.20.15.02",
-     "orig": "0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9",
-     "patched": "1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba",
-     "fixed": "72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840"},
-    {"name": "26.20.15.07",
-     "orig": "ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528",
-     "patched": "0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e",
-     "fixed": "ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e"},
-    {"name": "26.20.15.12",
-     "orig": "463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf",
-     "patched": "4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a",
-     "fixed": "10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1"},
-    {"name": "26.20.15.16",
-     "orig": "5808eed28beea6d9d218ce61905bec617d2cf9e34462f9132f36629a4fbbb6d5",
-     "patched": "0d8379ce16844321efb96ed9d03e019249216c613821a6816fef1b952707a883",
-     "fixed": "c726d431ba042c75d7b956abb079af3dab294a218893bc08b0b37b1c9b7fe404"},
-]
-
-LENGTH_OFFSET = 0x3686B
-LENGTH_OLD = b"\x08\x02"
-LENGTH_NEW = b"\x00\x01"
-MAN_OLD = b'uiAccess="true"></requestedExecutionLevel>\r\n'
-MAN_NEW = b'uiAccess="false"></requestedExecutionLevel>\n'
-assert len(LENGTH_OLD) == len(LENGTH_NEW), "length replacement must keep size"
-assert len(MAN_OLD) == len(MAN_NEW), "manifest replacement must keep size"
+DEFAULT_MANIFEST = Path(__file__).resolve().parent / "build_manifest.json"
 
 
 def sha256(b: bytes) -> str:
@@ -75,6 +42,8 @@ def sha256(b: bytes) -> str:
 def manifest_region(data: bytes):
     """返回 RT_MANIFEST 资源区在文件中的 (offset, size)；找不到返回 None。"""
     pe = pefile.PE(data=data)
+    if not hasattr(pe, "DIRECTORY_ENTRY_RESOURCE"):
+        return None
     for e in pe.DIRECTORY_ENTRY_RESOURCE.entries:
         if e.struct.Id == 24:  # RT_MANIFEST
             for r in e.directory.entries:
@@ -83,43 +52,27 @@ def manifest_region(data: bytes):
     return None
 
 
-def inspect(data: bytes):
-    """返回 (state, message, build)；build 为命中的构建项，unexpected 时为 None。"""
-    h = sha256(data)
-    n_old, n_new = data.count(MAN_OLD), data.count(MAN_NEW)
-    at = data[LENGTH_OFFSET:LENGTH_OFFSET + 2]
-    for b in BUILDS:
-        if h == b["fixed"] and at == LENGTH_NEW and n_old == 0 and n_new == 1:
-            return "already_fixed", "两步修改均已完成，无需动作（%s）" % b["name"], b
-        if h == b["orig"] and at == LENGTH_OLD and n_old == 1 and n_new == 0:
-            return "original_untouched", "原始文件（%s）：将一并应用 2 字节补丁与清单修复" % b["name"], b
-        if h == b["patched"] and at == LENGTH_NEW and n_old == 1 and n_new == 0:
-            return "needs_manifest_fix", "已打 2 字节补丁（%s），待修复清单（uiAccess true->false）" % b["name"], b
-    return "unexpected", ("状态与已知版本不符（sha=%s..., 长度位=%s, uiAccess旧=%d/新=%d）"
-                          % (h[:12], at.hex(" "), n_old, n_new)), None
-
-
-def build_final(data: bytes, state: str, build):
-    """在内存中构建最终文件并全面校验（长度、标记、XML、终态 sha），返回 (bytes, steps)。"""
+def build_final(data: bytes, state: str, build, rules):
+    """在内存中构建最终文件并全面校验，返回 (bytes, steps)。"""
+    off, old_b, new_b, man_old, man_new = core._patch_pieces(rules)
     cur, steps = data, []
     if state == "original_untouched":
-        cur = cur[:LENGTH_OFFSET] + LENGTH_NEW + cur[LENGTH_OFFSET + 2:]
-        if sha256(cur) != build["patched"]:
+        cur = cur[:off] + new_b + cur[off + len(old_b):]
+        if sha256(cur) != build["hashes"]["patched"]:
             raise RuntimeError("length-step intermediate verify failed")
-        steps.append("length 0x3686B: 08 02 -> 00 01")
-    i = cur.find(MAN_OLD)
+        steps.append("length %s: %s -> %s" % (hex(off), old_b.hex(" "), new_b.hex(" ")))
+    i = cur.find(man_old)
     if i < 0:
         raise RuntimeError("manifest marker not found")
-    cur = cur[:i] + MAN_NEW + cur[i + len(MAN_OLD):]
+    cur = cur[:i] + man_new + cur[i + len(man_old):]
     steps.append("manifest: uiAccess true -> false")
     if len(cur) != len(data):
         raise RuntimeError("file size changed")
-    if pefile is not None:
-        reg = manifest_region(cur)
-        if not reg:
-            raise RuntimeError("manifest region lost")
-        MD.parseString(cur[reg[0]:reg[0] + reg[1]])
-    if sha256(cur) != build["fixed"]:
+    reg = manifest_region(cur)
+    if not reg:
+        raise RuntimeError("manifest region lost")
+    MD.parseString(cur[reg[0]:reg[0] + reg[1]])
+    if sha256(cur) != build["hashes"]["fixed"]:
         raise RuntimeError("final sha mismatch (expected fixed build)")
     return cur, steps
 
@@ -130,29 +83,47 @@ def main():
     g.add_argument("--check", action="store_true")
     g.add_argument("--apply", action="store_true")
     ap.add_argument("--exe", default=DEFAULT_EXE)
+    ap.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
     exe = Path(a.exe)
     res = {"mode": "apply" if a.apply else "check", "exe": str(exe), "steps": []}
+
+    # 清单 fail-closed：任何清单问题拒绝动作，禁止回退硬编码表
+    try:
+        manifest = core.load_manifest(a.manifest)
+    except core.ManifestError as e:
+        res.update(result="manifest_error", message=str(e),
+                   sha_before=None, build=None, sha_orig=None)
+        Path(a.out).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(res, ensure_ascii=False))
+        return
+
+    rules = manifest["rules"]
     try:
         data = exe.read_bytes()
-        state, msg, build = inspect(data)
-        res.update(result=state, message=msg, sha_before=sha256(data),
-                   build=(build["name"] if build else None),
-                   sha_orig=(build["orig"] if build else None))
+        c = core.classify(data, manifest)
+        build = next((b for b in manifest["builds"] if b["name"] == c["build"]), None)
+        state = {"orig": "original_untouched",
+                 "patched": "needs_manifest_fix",
+                 "fixed": "already_fixed"}.get(c["state"], "unexpected")
+        res.update(result=state, message=c["message"], sha_before=c["sha256"],
+                   build=c["build"],
+                   sha_orig=(build["hashes"]["orig"] if build else None))
 
         if a.apply and state in ("original_untouched", "needs_manifest_fix"):
-            final, steps = build_final(data, state, build)
+            final, steps = build_final(data, state, build, rules)
             res["steps"] = steps
             res["sha_after"] = sha256(final)
             writes = []
             if state == "original_untouched":
-                writes.append((LENGTH_OFFSET, LENGTH_NEW))
-            writes.append((final.find(MAN_NEW), MAN_NEW))
+                writes.append((off := core._patch_pieces(rules)[0], core._patch_pieces(rules)[2]))
+            man_new = core._patch_pieces(rules)[4]
+            writes.append((final.find(man_new), man_new))
             with open(exe, "r+b") as f:
-                for off, buf in writes:
-                    f.seek(off)
+                for offw, buf in writes:
+                    f.seek(offw)
                     f.write(buf)
                 f.flush()
             back = exe.read_bytes()

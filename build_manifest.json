@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "rule_version": "1.0.0",
+  "created": "2026-11-23",
+  "note": "AMD DVR 引擎（AMDRSServ.exe）补丁维护统一清单：规则（rules）与构建记录（builds）分仓存放。检查/应用/恢复只从本清单查询；本文件为版本化真值源，禁止旁路硬编码表。",
+  "rules": {
+    "applies_to": {
+      "component": "AMDRSServ.exe (AMD DVR engine, user-mode)",
+      "os": "Windows 11 26H2",
+      "arch": "x64 (AMD64)",
+      "scope_note": "只管理用户态 DVR 引擎；不改内核驱动、不降级整包、不关闭 Windows 安全保护"
+    },
+    "patches": [
+      {
+        "id": "classname-length",
+        "kind": "fixed_offset",
+        "offset": "0x3686B",
+        "old_hex": "08 02",
+        "new_hex": "00 01",
+        "equal_length": true,
+        "purpose": "GetClassNameW 类名读取请求 0x208 -> 0x100，修复 998 越界静默失败"
+      },
+      {
+        "id": "manifest-uiAccess",
+        "kind": "unique_marker",
+        "old": "uiAccess=\"true\"></requestedExecutionLevel>\r\n",
+        "new": "uiAccess=\"false\"></requestedExecutionLevel>\n",
+        "equal_length": true,
+        "purpose": "补丁破坏签名后 uiAccess=true 会被 Windows 拒启；true->false(+1B) 配 \r\n->\n(-1B) 保长"
+      }
+    ],
+    "structure_invariants": {
+      "machine_hex": "0x8664",
+      "sections": [
+        [".text", "0x400", "0x1a8678", "0x1000"],
+        [".rdata", "0x1a8c00", "0x9ab98", "0x1aa000"],
+        [".data", "0x243800", "0x18a14", "0x245000"],
+        [".pdata", "0x254800", "0xf24c", "0x25e000"],
+        [".fptable", "0x263c00", "0x100", "0x26e000"],
+        [".rsrc", "0x263e00", "0x186c4", "0x26f000"],
+        [".reloc", "0x27c600", "0x2998", "0x288000"]
+      ],
+      "patch_point": {"offset": "0x3686B", "expect_hex": "08 02"},
+      "manifest_markers": {"old_count": 1, "new_count": 0},
+      "manifest_xml_parseable": true,
+      "iat_imports": ["GetClassNameW", "EnumWindows", "SendMessageTimeoutW"],
+      "cert_offset": "0x27F000"
+    },
+    "allowed_diff_regions": [
+      {"name": "pe_header_identity", "start": "0x128", "end": "0x1CE", "note": "TimeDateStamp / CheckSum / Security data directory"},
+      {"name": "rdata_build_timestamps", "start": "0x2111EC", "end": "0x21125F", "note": "内嵌构建时间戳"},
+      {"name": "rdata_build_hash", "start": "0x21B1F8", "end": "0x21B208", "note": "内嵌构建哈希"},
+      {"name": "rsrc_version_strings", "start": "0x27BAE2", "end": "0x27BDDB", "note": "版本/来源串（含 AMD-Radeon-Driver/drivers:<hash>）"},
+      {"name": "cert_overlay", "start": "0x27F000", "end": "EOF", "note": "Authenticode 签名覆盖区（文件末尾）"}
+    ],
+    "allowed_diff_basis": "由 26.20.15.02/.07/.12/.16 四代六对原件逐字节比对聚类得出；.text 等代码区零差异（代码零改动）",
+    "source_verification": {
+      "method": "version_string_source_hash + backup_info 交叉核对",
+      "pattern": "AMD-Radeon-Driver/drivers:<40hex>",
+      "note": "版本串只能支持 L2 候选资格，不能代替对确切原版哈希的批准"
+    },
+    "rehearsal_gates": [
+      "机器架构 == 0x8664",
+      "七节区表（off/vsize/va）与不变量一致",
+      "补丁点 0x3686B == 08 02（原版形态；patched/fixed 形态不得充当官方原件）",
+      "清单标记唯一：MAN_OLD==1 且 MAN_NEW==0",
+      "RT_MANIFEST 存在且 XML 可解析",
+      "IAT 含 GetClassNameW / EnumWindows / SendMessageTimeoutW",
+      "与参照模板的全部字节差异落在 allowed_diff_regions 内",
+      "来源可核验（来源哈希命中 backup_info 或签名有效）"
+    ],
+    "levels": {
+      "L1": "完整哈希已批准且状态一致：orig 先试录、fixed 不重复写、patched 不得充当官方原件",
+      "L2": "官方来源可核验且通过全部预演门禁的新样本：仅生成候选报告（登记输入/候选完整哈希），未获批准不得写入安装目标",
+      "L3": "来源不明、结构实变、定位结果不唯一或预演超范围：只记录阻断理由，零写入"
+    },
+    "write_policy": {
+      "refuse_on": ["manifest_missing", "manifest_field_missing", "state_conflict", "unsupported_rule_version", "unknown_build_hash"],
+      "no_fallback": "清单不可用时所有写操作必须拒绝；禁止回退读旧硬编码表继续写",
+      "candidate_not_approval": "候选报告（L2）不构成写入授权；须经审批绑定确切原版哈希后方可试补"
+    }
+  },
+  "builds": [
+    {
+      "name": "26.20.15.02",
+      "rule_version": "1.0.0",
+      "size": 2628872,
+      "hashes": {
+        "orig": "0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9",
+        "patched": "1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba",
+        "fixed": "72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840"
+      },
+      "source": "backup_info orig 20261017-073322: version=26.20.15.02;2407964;26.20.15.02;AMD-Radeon-Driver/drivers:f74fad3f870ce916e432e3806b748ad634974ef4",
+      "source_hash": "f74fad3f870ce916e432e3806b748ad634974ef4",
+      "approval": "approved",
+      "approval_note": "P0 样本账 2026-11-23 复核通过（实物+派生 12/12）"
+    },
+    {
+      "name": "26.20.15.07",
+      "rule_version": "1.0.0",
+      "size": 2628872,
+      "hashes": {
+        "orig": "ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528",
+        "patched": "0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e",
+        "fixed": "ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e"
+      },
+      "source": "backup_info orig 20261023-132652: version=26.20.15.07;2418581;26.20.15.07;AMD-Radeon-Driver/drivers:a9c55ce77e11bb962ab1ce58f62cddca16fc89ab",
+      "source_hash": "a9c55ce77e11bb962ab1ce58f62cddca16fc89ab",
+      "approval": "approved",
+      "approval_note": "P0 样本账 2026-11-23 复核通过"
+    },
+    {
+      "name": "26.20.15.12",
+      "rule_version": "1.0.0",
+      "size": 2628880,
+      "hashes": {
+        "orig": "463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf",
+        "patched": "4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a",
+        "fixed": "10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1"
+      },
+      "source": "backup_info orig 20261101-134830: version=26.20.15.12;2421854;26.20.15.12;AMD-Radeon-Driver/drivers:ac7b5433d4234d6ae05eb8d54d165983014c06f1",
+      "source_hash": "ac7b5433d4234d6ae05eb8d54d165983014c06f1",
+      "approval": "approved",
+      "approval_note": "P0 样本账 2026-11-23 复核通过"
+    },
+    {
+      "name": "26.20.15.16",
+      "rule_version": "1.0.0",
+      "size": 2627480,
+      "hashes": {
+        "orig": "5808eed28beea6d9d218ce61905bec617d2cf9e34462f9132f36629a4fbbb6d5",
+        "patched": "0d8379ce16844321efb96ed9d03e019249216c613821a6816fef1b952707a883",
+        "fixed": "c726d431ba042c75d7b956abb079af3dab294a218893bc08b0b37b1c9b7fe404"
+      },
+      "source": "backup_info orig 20261113-152143: version=26.20.15.16;2429542;26.20.15.16;AMD-Radeon-Driver/drivers:1144f53b6368c73782202e5b9d2b86ae7923e5dd",
+      "source_hash": "1144f53b6368c73782202e5b9d2b86ae7923e5dd",
+      "approval": "approved",
+      "approval_note": "P0 样本账 2026-11-23 复核通过；P1 留出测试时以测试清单隐藏本条（生产清单不删）"
+    }
+  ]
+}

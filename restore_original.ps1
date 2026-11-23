@@ -19,13 +19,39 @@ $target    = 'C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe'
 $engineCmd = 'C:\Program Files\AMD\CNext\CNext\RSServCmd.exe'
 $backupDir = Join-Path $PSScriptRoot 'backup'
 $stateFile = Join-Path $PSScriptRoot 'restore_state.json'
-# 已知构建表：按当前文件的 sha 判断属于哪一代，再用该代的原版备份还原。
-$builds = @(
-    @{ name = '26.20.15.02'; orig = '0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9'; patched = '1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba'; fixed = '72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840' },
-    @{ name = '26.20.15.07'; orig = 'ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528'; patched = '0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e'; fixed = 'ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e' },
-    @{ name = '26.20.15.12'; orig = '463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf'; patched = '4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a'; fixed = '10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1' },
-    @{ name = '26.20.15.16'; orig = '5808eed28beea6d9d218ce61905bec617d2cf9e34462f9132f36629a4fbbb6d5'; patched = '0d8379ce16844321efb96ed9d03e019249216c613821a6816fef1b952707a883'; fixed = 'c726d431ba042c75d7b956abb079af3dab294a218893bc08b0b37b1c9b7fe404' }
-)
+# 构建表统一从 build_manifest.json 查询（P1 D04；fail-closed，不回退硬编码表）。
+# 清单缺失/坏态/规则版本不支持时拒绝一切动作。
+$manifestPath = Join-Path $PSScriptRoot 'build_manifest.json'
+if (-not (Test-Path -LiteralPath $manifestPath)) {
+    Write-Host ('清单缺失（manifest_missing）：' + $manifestPath + '。拒绝动作，不回退硬编码表。') -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
+}
+try {
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {
+    Write-Host ('清单解析失败（manifest_parse_error）：' + $_.Exception.Message + '。拒绝动作。') -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
+}
+$supportedRuleVersions = @('1.0.0')
+if ($supportedRuleVersions -notcontains [string]$manifest.rule_version) {
+    Write-Host ('规则版本不支持（unsupported_rule_version）：' + $manifest.rule_version + '。拒绝动作。') -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
+}
+if (-not $manifest.builds -or $manifest.builds.Count -eq 0) {
+    Write-Host '清单无构建记录（builds_empty）。拒绝动作。' -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
+}
+$builds = @()
+foreach ($b in $manifest.builds) {
+    foreach ($k in @('name','orig','patched','fixed')) {
+        $v = if ($k -eq 'name') { $b.name } else { $b.hashes.$k }
+        if (-not $v) {
+            Write-Host ('清单字段缺失（field_missing）：builds.' + $b.name + '.' + $k + '。拒绝动作。') -ForegroundColor Red
+            Read-Host '按回车关闭'; exit 1
+        }
+    }
+    $builds += @{ name = $b.name; orig = $b.hashes.orig; patched = $b.hashes.patched; fixed = $b.hashes.fixed }
+}
 
 function Save-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
 function Test-Writable {
