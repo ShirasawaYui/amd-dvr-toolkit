@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "rule_version": "1.0.0",
+  "rule_version": "1.1.0",
   "created": "2026-11-23",
-  "note": "AMD DVR 引擎（AMDRSServ.exe）补丁维护统一清单：规则（rules）与构建记录（builds）分仓存放。检查/应用/恢复只从本清单查询；本文件为版本化真值源，禁止旁路硬编码表。",
+  "note": "AMD DVR 引擎（AMDRSServ.exe）补丁维护统一清单：规则（rules）与构建记录（builds）分仓存放。检查/应用/恢复只从本清单查询；本文件为版本化真值源，禁止旁路硬编码表。1.1.0（P3/D13b）：补丁点与结构指纹支持按构建覆盖（build.patch_points / build.structure_invariants），补丁点漂移的新构建仅靠清单数据适配；无覆盖的构建沿用规则默认，行为与 1.0.0 逐字节一致。",
   "rules": {
     "applies_to": {
       "component": "AMDRSServ.exe (AMD DVR engine, user-mode)",
@@ -18,7 +18,8 @@
         "old_hex": "08 02",
         "new_hex": "00 01",
         "equal_length": true,
-        "purpose": "GetClassNameW 类名读取请求 0x208 -> 0x100，修复 998 越界静默失败"
+        "purpose": "GetClassNameW 类名读取请求 0x208 -> 0x100，修复 998 越界静默失败",
+        "scope": "规则默认（四代 26.20.15.02/.07/.12/.16）；补丁点漂移的构建在 build.patch_points 覆盖 offset/old_hex/new_hex，可带 context_pre_hex 做定位唯一性校验"
       },
       {
         "id": "manifest-uiAccess",
@@ -26,7 +27,8 @@
         "old": "uiAccess=\"true\"></requestedExecutionLevel>\r\n",
         "new": "uiAccess=\"false\"></requestedExecutionLevel>\n",
         "equal_length": true,
-        "purpose": "补丁破坏签名后 uiAccess=true 会被 Windows 拒启；true->false(+1B) 配 \r\n->\n(-1B) 保长"
+        "purpose": "补丁破坏签名后 uiAccess=true 会被 Windows 拒启；true->false(+1B) 配 \r\n->\n(-1B) 保长",
+        "scope": "全族同构（unique_marker 与偏移无关）；build.patch_points['manifest-uiAccess'].at 仅作定位信息登记"
       }
     ],
     "structure_invariants": {
@@ -77,7 +79,14 @@
     "write_policy": {
       "refuse_on": ["manifest_missing", "manifest_field_missing", "state_conflict", "unsupported_rule_version", "unknown_build_hash"],
       "no_fallback": "清单不可用时所有写操作必须拒绝；禁止回退读旧硬编码表继续写",
-      "candidate_not_approval": "候选报告（L2）不构成写入授权；须经审批绑定确切原版哈希后方可试补"
+      "candidate_not_approval": "候选报告（L2）不构成写入授权；须经审批绑定确切原版哈希后方可试补",
+      "approval_states": {
+        "approved": "转正式：B 臂 6/6 验收后的终态",
+        "candidate": "已登记候选（U05 审批后新增）：可凭审批绑定进入试补，不等于转正式",
+        "holdout": "留出测试用",
+        "rejected": "拒绝"
+      },
+      "trial_write_requires": "U05 审批绑定（目标路径+原版与候选终态哈希+规则版本+范围）+ 操作者授权；与 approval=candidate 记录并存才可试补"
     }
   },
   "builds": [

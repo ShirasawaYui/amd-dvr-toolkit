@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pefile
 
-SUPPORTED_RULE_VERSIONS = {"1.0.0"}
+SUPPORTED_RULE_VERSIONS = {"1.0.0", "1.1.0"}
 
 STATE_ORIG, STATE_PATCHED, STATE_FIXED = "orig", "patched", "fixed"
 STATE_RESULT = {
@@ -90,6 +90,22 @@ def validate_manifest(m):
                 errs.append("field_missing:%s.%s" % (tag, k))
         if b.get("rule_version") and b.get("rule_version") not in SUPPORTED_RULE_VERSIONS:
             errs.append("unsupported_rule_version:%s(%s)" % (b.get("name"), b.get("rule_version")))
+        # 可选：按构建补丁点覆盖（1.1.0）——字段缺失/类型错即拒
+        pp = b.get("patch_points")
+        if pp is not None:
+            if not isinstance(pp, dict):
+                errs.append("bad_patch_points:%s" % tag)
+            else:
+                lp = pp.get("classname-length")
+                if not (isinstance(lp, dict) and isinstance(lp.get("offset"), str)
+                        and re.fullmatch(r"0x[0-9a-fA-F]+", lp["offset"])
+                        and re.fullmatch(r"[0-9a-fA-F ]+", lp.get("old_hex", ""))
+                        and re.fullmatch(r"[0-9a-fA-F ]+", lp.get("new_hex", ""))):
+                    errs.append("bad_patch_points:%s.classname-length" % tag)
+        si = b.get("structure_invariants")
+        if si is not None:
+            if not (isinstance(si, dict) and "sections" in si and "patch_point" in si):
+                errs.append("bad_structure_invariants:%s" % tag)
         hs = b.get("hashes") or {}
         for st in (STATE_ORIG, STATE_PATCHED, STATE_FIXED):
             v = hs.get(st)
@@ -108,10 +124,23 @@ def validate_manifest(m):
 
 # ---------------------------------------------------------------- 三态识别与派生
 
-def _patch_pieces(rules):
-    by_id = {p["id"]: p for p in rules["patches"]}
+def _patch_pieces(rules, patch_points=None):
+    """补丁五元组 (off, old_b, new_b, man_old, man_new)。
+
+    patch_points 为按构建/profile 的覆盖（1.1.0）：可覆盖 classname-length 的
+    offset/old_hex/new_hex 与 manifest-uiAccess 的 at（仅信息）；字符串补丁
+    （manifest-uiAccess）全局同构，覆盖不改其 old/new 语义。
+    """
+    by_id = {p["id"]: dict(p) for p in rules["patches"]}
     lp = by_id["classname-length"]
     mp = by_id["manifest-uiAccess"]
+    if patch_points:
+        if isinstance(patch_points.get("classname-length"), dict):
+            lp.update(patch_points["classname-length"])
+        if isinstance(patch_points.get("manifest-uiAccess"), dict):
+            mp.update(patch_points["manifest-uiAccess"])
+    if _hex_to_bytes(lp["old_hex"]) == _hex_to_bytes(lp["new_hex"]):
+        raise ManifestError("patch_bytes_conflict: old_hex == new_hex")
     return (
         _hex_to_int(lp["offset"]),
         _hex_to_bytes(lp["old_hex"]),
@@ -122,12 +151,17 @@ def _patch_pieces(rules):
 
 
 def classify(data: bytes, manifest):
-    """三态识别。返回 {state, result, build, sha256, message}；build 可为 None（unexpected）。"""
-    off, old_b, new_b, man_old, man_new = _patch_pieces(manifest["rules"])
+    """三态识别。返回 {state, result, build, sha256, message}；build 可为 None（unexpected）。
+
+    1.1.0：逐构建取补丁点（build.patch_points 覆盖优先，否则规则默认），
+    保证补丁点漂移的新构建登记后仍能正确验证形态。
+    """
+    rules = manifest["rules"]
     h = sha256(data)
-    at = data[off:off + len(old_b)]
-    n_old, n_new = data.count(man_old), data.count(man_new)
     for b in manifest["builds"]:
+        off, old_b, new_b, man_old, man_new = _patch_pieces(rules, b.get("patch_points"))
+        at = data[off:off + len(old_b)]
+        n_old, n_new = data.count(man_old), data.count(man_new)
         hs = b["hashes"]
         if h == hs[STATE_FIXED] and at == new_b and n_old == 0 and n_new == 1:
             return {"state": STATE_FIXED, "result": STATE_RESULT[STATE_FIXED],
@@ -141,14 +175,20 @@ def classify(data: bytes, manifest):
             return {"state": STATE_PATCHED, "result": STATE_RESULT[STATE_PATCHED],
                     "build": b["name"], "sha256": h,
                     "message": "已打 2 字节补丁（%s），待修复清单" % b["name"]}
+    off, old_b, new_b, man_old, man_new = _patch_pieces(rules)
+    at = data[off:off + len(old_b)]
+    n_old, n_new = data.count(man_old), data.count(man_new)
     return {"state": "unexpected", "result": "unexpected", "build": None, "sha256": h,
             "message": "状态与已知版本不符（sha=%s..., 长度位=%s, uiAccess旧=%d/新=%d）"
                        % (h[:12], at.hex(" "), n_old, n_new)}
 
 
-def derive(data: bytes, state: str, rules):
-    """纯内存等长派生（patched / fixed），返回 (bytes, steps)。不做任何落盘。"""
-    off, old_b, new_b, man_old, man_new = _patch_pieces(rules)
+def derive(data: bytes, state: str, rules, patch_points=None):
+    """纯内存等长派生（patched / fixed），返回 (bytes, steps)。不做任何落盘。
+
+    patch_points：按构建/profile 的补丁点覆盖（见 _patch_pieces）。
+    """
+    off, old_b, new_b, man_old, man_new = _patch_pieces(rules, patch_points)
     cur, steps = data, []
     if state == STATE_PATCHED:
         if cur[off:off + len(old_b)] != old_b:
@@ -230,13 +270,22 @@ def diff_blocks(a: bytes, b: bytes):
     return out
 
 
-def structural_check(data: bytes, manifest, reference: bytes = None):
-    """预演门禁（rehearsal_gates）逐条校验。返回 (ok, reasons[], facts)。"""
+def structural_check(data: bytes, manifest, reference: bytes = None, profile=None):
+    """预演门禁（rehearsal_gates）逐条校验。返回 (ok, reasons[], facts)。
+
+    profile（1.1.0）：未登记新样本的按构建指纹/补丁点 overlay，键同
+    build record 的 structure_invariants / patch_points / allowed_diff_regions。
+    未提供 profile 时用规则默认（四代布局）。
+    """
     rules = manifest["rules"]
-    inv = rules["structure_invariants"]
+    inv = (profile or {}).get("structure_invariants") or rules["structure_invariants"]
+    patch_points = (profile or {}).get("patch_points")
+    allowed_regions = (profile or {}).get("allowed_diff_regions")
+    if allowed_regions is None:
+        allowed_regions = rules["allowed_diff_regions"]
     reasons = []
     facts = pe_facts(data)
-    off, old_b, new_b, man_old, man_new = _patch_pieces(rules)
+    off, old_b, new_b, man_old, man_new = _patch_pieces(rules, patch_points)
 
     if facts["machine"] != inv["machine_hex"]:
         reasons.append("架构不符: %s != %s" % (facts["machine"], inv["machine_hex"]))
@@ -244,6 +293,16 @@ def structural_check(data: bytes, manifest, reference: bytes = None):
         reasons.append("节区表与不变量不符（结构实变）")
     if data[off:off + len(old_b)] != old_b:
         reasons.append("补丁点 %s 字节不是 %s（定位失效/形态非原版）" % (hex(off), old_b.hex(" ")))
+    # 定位唯一性（context_pre_hex）：带上下文指纹时，全文件只允许唯一命中
+    lp = (patch_points or {}).get("classname-length") or {}
+    ctx = lp.get("context_pre_hex")
+    if ctx:
+        pat = _hex_to_bytes(ctx) + old_b
+        n = data.count(pat)
+        if n != 1:
+            reasons.append("补丁点定位不唯一: context+old 全文件命中 %d 次（要求 1）" % n)
+        elif data.find(pat) != off - len(_hex_to_bytes(ctx)):
+            reasons.append("补丁点上下文不符: 声明偏移 %s 与唯一命中位置不一致" % hex(off))
     n_old, n_new = data.count(man_old), data.count(man_new)
     if n_old != inv["manifest_markers"]["old_count"] or n_new != inv["manifest_markers"]["new_count"]:
         reasons.append("清单标记计数不符: MAN_OLD=%d MAN_NEW=%d" % (n_old, n_new))
@@ -263,7 +322,7 @@ def structural_check(data: bytes, manifest, reference: bytes = None):
         blocks = diff_blocks(reference, data)
         allowed = [(_hex_to_int(r["start"]),
                    10 ** 18 if _hex_to_int(r["end"]) is None else _hex_to_int(r["end"]))
-                  for r in rules["allowed_diff_regions"]]
+                  for r in allowed_regions]
         for s, e in blocks:
             if not any(rs <= s and e <= re_ for rs, re_ in allowed):
                 reasons.append("差异越界 [%s..%s)（超出允许差异区）" % (hex(s), hex(e)))
@@ -305,29 +364,47 @@ def source_ok(facts, manifest, backup_info_path=None, signature_valid=None):
 # ---------------------------------------------------------------- L1/L2/L3 分级
 
 def grade(data: bytes, manifest, reference: bytes = None,
-          backup_info_path=None, signature_valid=None):
-    """候选分级。返回 dict：level、reasons、classification、candidate（仅 L2）。"""
+          backup_info_path=None, signature_valid=None, profile=None):
+    """候选分级。返回 dict：level、reasons、classification、candidate（仅 L2）。
+
+    profile（1.1.0）：未登记新样本的 overlay（patch_points / structure_invariants
+    / allowed_diff_regions）。带 profile 时允许无参照模板（族内首构建），
+    以指纹+定位唯一性代替跨构建差异区核对。
+    """
     cls = classify(data, manifest)
     # L1：完整哈希命中已批准构建
     if cls["state"] != "unexpected":
         for b in manifest["builds"]:
-            if b["name"] == cls["build"] and b.get("approval") == "approved":
-                note = {
-                    STATE_ORIG: "原版：先试录（U04），不先写",
-                    STATE_FIXED: "完整修复：不重复写，核对试录",
-                    STATE_PATCHED: "中间态：不得充当官方原件；走恢复/完整修复须授权",
-                }[cls["state"]]
-                return {"level": "L1", "reasons": [note], "classification": cls, "candidate": None}
-        return {"level": "L3", "reasons": ["命中构建但未获批准（approval=%s）"
-                                           % next(b["approval"] for b in manifest["builds"] if b["name"] == cls["build"])],
-                "classification": cls, "candidate": None}
+            if b["name"] == cls["build"]:
+                if b.get("approval") == "approved":
+                    note = {
+                        STATE_ORIG: "原版：先试录（U04），不先写",
+                        STATE_FIXED: "完整修复：不重复写，核对试录",
+                        STATE_PATCHED: "中间态：不得充当官方原件；走恢复/完整修复须授权",
+                    }[cls["state"]]
+                    return {"level": "L1", "reasons": [note], "classification": cls, "candidate": None}
+                if b.get("approval") == "candidate":
+                    # 已登记候选（U05 审批后新增的候选构建记录）：
+                    # 可凭审批绑定进入试补；B 臂验收后才转正式（approved）
+                    return {"level": "L2",
+                            "reasons": ["候选构建记录（approval=candidate）：%s；"
+                                        "试补须凭 U05 审批绑定，B 臂 6/6 验收后转正式"
+                                        % cls["state"]],
+                            "classification": cls,
+                            "candidate": {"input_sha256": cls["sha256"],
+                                          "candidate_patched_sha256": b["hashes"][STATE_PATCHED],
+                                          "candidate_fixed_sha256": b["hashes"][STATE_FIXED],
+                                          "from": "build_record"}}
+                return {"level": "L3",
+                        "reasons": ["命中构建但未获批准（approval=%s）" % b.get("approval")],
+                        "classification": cls, "candidate": None}
 
     # 未命中 → L2 / L3
     s_ok, s_evid = source_ok(pe_facts(data), manifest, backup_info_path, signature_valid)
-    if reference is None:
+    if reference is None and profile is None:
         return {"level": "L3", "reasons": ["无参照模板，差异区预演未完成（L2 门禁不齐）"],
                 "classification": cls, "candidate": None}
-    st_ok, st_reasons, facts = structural_check(data, manifest, reference)
+    st_ok, st_reasons, facts = structural_check(data, manifest, reference, profile)
     if not s_ok:
         return {"level": "L3", "reasons": ["来源不可核验（%s）" % s_evid],
                 "classification": cls, "candidate": None, "facts": facts}
@@ -335,15 +412,26 @@ def grade(data: bytes, manifest, reference: bytes = None,
         return {"level": "L3", "reasons": ["预演门禁未过: " + "；".join(st_reasons)],
                 "classification": cls, "candidate": None, "facts": facts}
     # L2：生成候选（内存派生，登记输入/候选完整哈希）
+    patch_points = (profile or {}).get("patch_points")
     cand = {"input_sha256": cls["sha256"], "steps": []}
     try:
-        p_bytes, p_steps = derive(data, STATE_PATCHED, manifest["rules"])
-        f_bytes, f_steps = derive(data, STATE_FIXED, manifest["rules"])
+        p_bytes, p_steps = derive(data, STATE_PATCHED, manifest["rules"], patch_points)
+        f_bytes, f_steps = derive(data, STATE_FIXED, manifest["rules"], patch_points)
+        # 候选超范围门禁：orig→fixed 的全部差异必须恰为两处补丁点（等长、大小不变）
+        off, old_b, new_b, man_old, man_new = _patch_pieces(manifest["rules"], patch_points)
+        sites = sorted([(off, off + len(old_b)), (f_bytes.find(man_new), f_bytes.find(man_new) + len(man_new))])
+        blocks = diff_blocks(data, f_bytes)
+        if len(f_bytes) != len(data):
+            raise RuntimeError("候选文件大小变化")
+        for s, e in blocks:
+            if not any(rs <= s and e <= re_ for rs, re_ in sites):
+                raise RuntimeError("候选差异越界 [%s..%s)" % (hex(s), hex(e)))
         cand.update(
             candidate_patched_sha256=sha256(p_bytes),
             candidate_fixed_sha256=sha256(f_bytes),
             candidate_size=len(f_bytes),
             steps=p_steps + f_steps,
+            diff_scope="orig→fixed 差异恰为两处补丁点 %s" % [(hex(s), hex(e)) for s, e in sites],
         )
     except Exception as e:
         return {"level": "L3", "reasons": ["候选派生失败: %s" % e],

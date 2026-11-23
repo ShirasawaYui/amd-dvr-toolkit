@@ -8,7 +8,8 @@
 禁止回退旧硬编码表。
 
 背景（详见修复报告 §15）：
-  - 类名读取越界：偏移 0x3686B 处把 0x208(520字符) 改为 0x100(256字符)
+  - 类名读取越界：把 0x208(520字符) 改为 0x100(256字符)（偏移按构建登记，
+    四代为 0x3686B；26.20.29.02 重定位至 0x3669B，见 build_manifest.json）
   - uiAccess 门槛：签名失效后 uiAccess=true 会被 Windows 拒启，须同步改 false
 
 处理状态（自动识别；所有改写均为等长替换、文件大小不变）：
@@ -53,8 +54,12 @@ def manifest_region(data: bytes):
 
 
 def build_final(data: bytes, state: str, build, rules):
-    """在内存中构建最终文件并全面校验，返回 (bytes, steps)。"""
-    off, old_b, new_b, man_old, man_new = core._patch_pieces(rules)
+    """在内存中构建最终文件并全面校验，返回 (bytes, steps)。
+
+    1.1.0：补丁点取 build.patch_points 覆盖（无覆盖用规则默认），
+    使补丁点漂移的新构建仅靠清单数据适配，脚本不再为同族新版改动。
+    """
+    off, old_b, new_b, man_old, man_new = core._patch_pieces(rules, (build or {}).get("patch_points"))
     cur, steps = data, []
     if state == "original_untouched":
         cur = cur[:off] + new_b + cur[off + len(old_b):]
@@ -118,8 +123,11 @@ def main():
             res["sha_after"] = sha256(final)
             writes = []
             if state == "original_untouched":
-                writes.append((off := core._patch_pieces(rules)[0], core._patch_pieces(rules)[2]))
-            man_new = core._patch_pieces(rules)[4]
+                pieces = core._patch_pieces(rules, (build or {}).get("patch_points"))
+                writes.append((pieces[0], pieces[2]))
+                man_new = pieces[4]
+            else:
+                man_new = core._patch_pieces(rules, (build or {}).get("patch_points"))[4]
             writes.append((final.find(man_new), man_new))
             with open(exe, "r+b") as f:
                 for offw, buf in writes:

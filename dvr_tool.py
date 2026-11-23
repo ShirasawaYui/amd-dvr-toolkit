@@ -42,8 +42,22 @@ def _load_bytes(path):
         return None, "file_unreadable(%s)" % e
 
 
+def _load_profile(path):
+    """加载未登记新样本的 overlay（1.1.0）：patch_points/structure_invariants/allowed_diff_regions。"""
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        raise SystemExit("profile_missing: %s" % p)
+    d = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(d, dict) or "patch_points" not in d or "structure_invariants" not in d:
+        raise SystemExit("profile_invalid: 需含 patch_points 与 structure_invariants")
+    return d
+
+
 def cmd_check(a):
     manifest = core.load_manifest(a.manifest)
+    profile = _load_profile(getattr(a, "profile", None))
     sig = {"valid": True, "invalid": False, "unknown": None}.get(a.signature_valid)
     data, err = _load_bytes(a.exe)
     report = {
@@ -51,6 +65,10 @@ def cmd_check(a):
         "tool": "dvr_tool check", "rule_version": manifest["rule_version"],
         "exe": str(Path(a.exe)),
     }
+    if profile is not None:
+        report["profile"] = {"name": profile.get("name"),
+                             "source": profile.get("source"),
+                             "note": profile.get("note")}
     if err:
         report.update(blocked=True, reason=err,
                       next_step="只报阻断：确认安装状态/路径/权限后重查；不猜测、不写入")
@@ -60,7 +78,7 @@ def cmd_check(a):
     ref = None
     if a.reference:
         ref, _ = _load_bytes(a.reference)
-    g = core.grade(data, manifest, ref, a.backup_info, sig)
+    g = core.grade(data, manifest, ref, a.backup_info, sig, profile=profile)
     file_state = {
         "normalized_path": str(Path(a.exe).resolve()),
         "size": len(data), "sha256": g["classification"]["sha256"],
@@ -98,13 +116,14 @@ def cmd_check(a):
 
 def cmd_rehearse(a):
     manifest = core.load_manifest(a.manifest)
+    profile = _load_profile(getattr(a, "profile", None))
     sig = {"valid": True, "invalid": False, "unknown": None}.get(a.signature_valid)
     data, err = _load_bytes(a.exe)
     if err:
         return _out(a, {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "exe": a.exe,
                         "blocked": True, "reason": err}, ok=False)
     ref = _load_bytes(a.reference)[0] if a.reference else None
-    g = core.grade(data, manifest, ref, a.backup_info, sig)
+    g = core.grade(data, manifest, ref, a.backup_info, sig, profile=profile)
     report = {
         "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "tool": "dvr_tool rehearse", "rule_version": manifest["rule_version"],
@@ -114,6 +133,10 @@ def cmd_rehearse(a):
         "write_performed": False,
         "next_step": "L2 候选不构成授权；L1/L3 见 reasons",
     }
+    if profile is not None:
+        report["profile"] = {"name": profile.get("name"),
+                             "source": profile.get("source"),
+                             "note": profile.get("note")}
     return _out(a, report, ok=True)
 
 
@@ -367,6 +390,152 @@ def cmd_regress(a):
     return _out(a, report, ok=(passed == len(cases)))
 
 
+def cmd_regress_p3(a):
+    """P3 回归：新构建 26.20.29.02 识别/候选/拒写/确定性（全量零写入）。"""
+    manifest = core.load_manifest(a.manifest)                 # 生产清单（不含 .29.02）
+    cand_manifest = core.load_manifest(a.candidate_manifest)   # 测试清单（含 candidate 记录）
+    profile = _load_profile(a.profile)
+    work = Path(a.workdir)
+    tgt = work / "targets"
+    tgt.mkdir(parents=True, exist_ok=True)
+    sdir = Path(a.sample_dir)
+    orig = (sdir / "AMDRSServ.exe.orig.sample.exe").read_bytes()
+    patched = (sdir / "AMDRSServ.exe.patched.derived.exe").read_bytes()
+    fixed = (sdir / "AMDRSServ.exe.fixed.derived.exe").read_bytes()
+    trio = {core.STATE_ORIG: orig, core.STATE_PATCHED: patched, core.STATE_FIXED: fixed}
+    cases, targets = [], []
+
+    def track(blob, label):
+        p = tgt / label
+        p.write_bytes(blob)
+        targets.append(p)
+
+    # R1: 候选清单（approval=candidate）三态分类正确
+    for st, blob in sorted(trio.items()):
+        track(blob, "r1_%s.bin" % st)
+        c = core.classify(blob, cand_manifest)
+        _case(cases, "R1-%s" % st, "候选清单三态分类",
+              "26.20.29.02/%s" % st, "%s/%s" % (c["build"], c["state"]))
+
+    # R2: 生产清单 + profile overlay → L2 候选（哈希可复核）
+    g = core.grade(orig, manifest, None, a.backup_info, True, profile=profile)
+    cand = g.get("candidate") or {}
+    expect = "L2|in=%s|p=%s|f=%s" % (core.sha256(orig),
+                                     "0863b4d68ea222753c2bc76d5b687686a7e0580f2430e2cdefe437ac3b4fa564",
+                                     "1f59bc9a368fb0345134242ef1731270bbeea0cbef710692cb8d6b0f0dea3311")
+    actual = "%s|in=%s|p=%s|f=%s" % (g["level"], cand.get("input_sha256"),
+                                     cand.get("candidate_patched_sha256"),
+                                     cand.get("candidate_fixed_sha256"))
+    _case(cases, "R2-L2-candidate", "未登记新样本+profile → L2 可复核候选", expect, actual,
+          detail=";".join(g["reasons"]))
+    _case(cases, "R2-diff-scope", "候选超范围门禁（差异恰为两处补丁点）",
+          "in-scope", "in-scope" if "diff_scope" in cand else "missing",
+          detail=str(cand.get("diff_scope")))
+
+    # R3: 错误补丁点 profile（沿用四代 0x3686B）→ L3 定位失效
+    bad_profile = json.loads(json.dumps(profile))
+    bad_profile["patch_points"]["classname-length"]["offset"] = "0x3686B"
+    bad_profile["structure_invariants"]["patch_point"]["offset"] = "0x3686B"
+    g = core.grade(orig, manifest, None, a.backup_info, True, profile=bad_profile)
+    _case(cases, "R3-wrong-offset", "错误补丁点偏移 → L3 拒绝", "L3", g["level"],
+          detail=";".join(g["reasons"])[:200])
+
+    # R4: 定位不唯一（去掉上下文指纹且偏移随机）→ 结构门禁拒
+    weak = json.loads(json.dumps(profile))
+    weak["patch_points"]["classname-length"].pop("context_pre_hex", None)
+    g = core.grade(orig, manifest, None, a.backup_info, True, profile=weak)
+    # 弱 profile 下 0x3669B 偏移本身仍正确 → L2 可接受；改用双命中验证 context 门禁
+    dup = json.loads(json.dumps(profile))
+    dup["patch_points"]["classname-length"]["context_pre_hex"] = "41 B8"  # 短上下文=双命中
+    g2 = core.grade(orig, manifest, None, a.backup_info, True, profile=dup)
+    _case(cases, "R4-locate-unique", "上下文指纹双命中 → L3（定位不唯一）", "L3", g2["level"],
+          detail=";".join(g2["reasons"])[:200])
+
+    # R5: fixed/patched 不充当官方原件（未登记+profile → L3）
+    for st, blob in ((core.STATE_PATCHED, patched), (core.STATE_FIXED, fixed)):
+        g = core.grade(blob, manifest, None, a.backup_info, True, profile=profile)
+        _case(cases, "R5-%s-not-orig" % st, "非原版形态不得充当官方原件 → L3", "L3", g["level"],
+              detail=";".join(g["reasons"])[:160])
+
+    # R6: 候选登记态 → L2 试补语义（不是 L1、不是 L3）
+    g = core.grade(orig, cand_manifest, None, a.backup_info, True)
+    _case(cases, "R6-candidate-record", "approval=candidate 登记 → L2 试补语义", "L2", g["level"],
+          detail=";".join(g["reasons"])[:200])
+
+    # R7: 派生确定性（两次一致）
+    pp = profile["patch_points"]
+    p1, _ = core.derive(orig, core.STATE_PATCHED, manifest["rules"], pp)
+    p2, _ = core.derive(orig, core.STATE_PATCHED, manifest["rules"], pp)
+    f1, _ = core.derive(orig, core.STATE_FIXED, manifest["rules"], pp)
+    f2, _ = core.derive(orig, core.STATE_FIXED, manifest["rules"], pp)
+    _case(cases, "R7-determinism", "同输入同规则重复派生一致",
+          core.sha256(p1) + core.sha256(f1), core.sha256(p2) + core.sha256(f2))
+
+    # R8: fail-closed——坏清单拒载（含 .29.02 记录也一样）
+    for label, mutate in [
+        ("R8a-rule-version", lambda m: m.update(rule_version="0.9.0")),
+        ("R8b-bad-patch-points", lambda m: m["builds"][-1].update(patch_points={"classname-length": {"offset": "zz"}})),
+        ("R8c-state-conflict", lambda m: m["builds"][-1].update(
+            hashes=dict(m["builds"][-1]["hashes"], fixed=m["builds"][0]["hashes"]["fixed"]))),
+    ]:
+        bad = json.loads(Path(a.candidate_manifest).read_text(encoding="utf-8"))
+        mutate(bad)
+        badp = work / ("bad_%s.json" % label)
+        badp.write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+        t = tgt / ("%s_target.bin" % label)
+        t.write_bytes(orig)
+        targets.append(t)
+        before = core.sha256(t.read_bytes())
+        out_json = work / ("%s_out.json" % label)
+        r = subprocess.run([sys.executable, str(HERE / "patch_manifest.py"), "--apply",
+                            "--exe", str(t), "--manifest", str(badp), "--out", str(out_json)],
+                           capture_output=True, text=True)
+        try:
+            res = json.loads(r.stdout.strip().splitlines()[-1])
+        except Exception:
+            res = {"result": "no_json", "message": (r.stdout + r.stderr)[-300:]}
+        after = core.sha256(t.read_bytes())
+        refused = (res.get("result") != "applied") and before == after
+        _case(cases, label, "清单坏态 → 写操作拒绝且目标不变", "refused|unchanged",
+              "refused|unchanged" if refused else "%s|CHANGED(!)" % res.get("result"),
+              detail=str(res.get("message", ""))[:160])
+
+    # R9: 生产清单无 profile 直接判 .29.02 → 不得静默接受
+    g = core.grade(orig, manifest, None, a.backup_info, True)
+    _case(cases, "R9-no-profile", "生产清单+无 profile 判新样本 → L3（不静默放行）", "L3", g["level"],
+          detail=";".join(g["reasons"])[:200])
+
+    # R10: 零写入证明
+    unchanged = True
+    tw = []
+    for p in targets:
+        if not p.exists():
+            continue
+        tw.append({"path": str(p), "sha256": core.sha256(p.read_bytes())})
+    for c in cases:
+        if "CHANGED" in c["actual"]:
+            unchanged = False
+    # 源样本前后哈希
+    src_before = core.sha256(orig)
+    src_after = core.sha256((sdir / "AMDRSServ.exe.orig.sample.exe").read_bytes())
+    _case(cases, "R10-zero-write", "源样本与夹具全程零写入", "unchanged",
+          "unchanged" if (unchanged and src_before == src_after) else "CHANGED(!)")
+
+    passed = sum(1 for c in cases if c["pass"])
+    report = {
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "tool": "dvr_tool regress-p3", "rule_version": manifest["rule_version"],
+        "manifest": a.manifest, "candidate_manifest": a.candidate_manifest,
+        "sample_dir": a.sample_dir, "profile": a.profile,
+        "zero_write": {"targets": tw, "all_unchanged": unchanged and src_before == src_after,
+                       "processes_stopped": False},
+        "cases": cases,
+        "summary": {"total": len(cases), "passed": passed, "failed": len(cases) - passed},
+        "next_step": "全部通过则 P3 只读侧就绪；实机试补仍须 U05 审批绑定+操作者授权",
+    }
+    return _out(a, report, ok=(passed == len(cases)))
+
+
 def _out(a, report, ok):
     txt = json.dumps(report, ensure_ascii=False, indent=2)
     if getattr(a, "out", None):
@@ -387,6 +556,7 @@ def main():
     p.add_argument("--backup-info")
     p.add_argument("--prev-record")
     p.add_argument("--signature-valid", choices=["valid", "invalid", "unknown"], default="unknown")
+    p.add_argument("--profile", help="未登记新样本 overlay JSON（1.1.0）")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_check)
 
@@ -396,6 +566,7 @@ def main():
     p.add_argument("--reference")
     p.add_argument("--backup-info")
     p.add_argument("--signature-valid", choices=["valid", "invalid", "unknown"], default="unknown")
+    p.add_argument("--profile", help="未登记新样本 overlay JSON（1.1.0）")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_rehearse)
 
@@ -415,6 +586,16 @@ def main():
     p.add_argument("--hide-build", default="26.20.15.16")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_regress)
+
+    p = sub.add_parser("regress-p3")
+    p.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    p.add_argument("--candidate-manifest", required=True)
+    p.add_argument("--sample-dir", required=True)
+    p.add_argument("--profile", required=True)
+    p.add_argument("--backup-info")
+    p.add_argument("--workdir", required=True)
+    p.add_argument("--out")
+    p.set_defaults(fn=cmd_regress_p3)
 
     a = ap.parse_args()
     sys.exit(a.fn(a))
