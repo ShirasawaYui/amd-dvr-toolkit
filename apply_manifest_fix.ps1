@@ -44,15 +44,50 @@ $target    = 'C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe'
 
 $engineCmd = 'C:\Program Files\AMD\CNext\CNext\RSServCmd.exe'
 
-# Python 解释器：依次尝试 PATH 中的 python / py / python3；
-# 也可在此直接写死你的 python.exe 路径（需 Python 3.8+，pefile 为可选依赖）。
-$py        = $null
+# Python 解释器：逐个候选探测，必须同时满足「能执行」与「已装 pefile」。
+# 不能只看 PATH 里有没有 python —— 本机 PATH 的 python 是未装 pefile 的新版本，
+# 直接用它会让 patch_manifest.py 报 ModuleNotFoundError、结果文件不生成。
+$candidates = New-Object System.Collections.Generic.List[string]
+# 逃生舱：手动指定解释器时优先用它（设置环境变量 DVR_TOOLKIT_PYTHON=<python.exe 完整路径>）
+if ($env:DVR_TOOLKIT_PYTHON) {
+    if (Test-Path -LiteralPath $env:DVR_TOOLKIT_PYTHON) {
+        $candidates.Add($env:DVR_TOOLKIT_PYTHON)
+    } else {
+        Write-Host ('提示：环境变量 DVR_TOOLKIT_PYTHON 指向的文件不存在，已忽略：' + $env:DVR_TOOLKIT_PYTHON) -ForegroundColor Yellow
+    }
+}
 foreach ($pyName in @('python', 'py', 'python3')) {
     $pyCmd = Get-Command $pyName -ErrorAction SilentlyContinue
-    if ($pyCmd) { $py = $pyCmd.Source; break }
+    if ($pyCmd -and $pyCmd.Source -and -not $candidates.Contains($pyCmd.Source)) { $candidates.Add($pyCmd.Source) }
+}
+$probePatterns = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python*\python.exe'),
+    (Join-Path $env:USERPROFILE '.workbuddy\binaries\python\versions\*\python.exe'),
+    (Join-Path $env:USERPROFILE '.workbuddy\binaries\python\envs\default\Scripts\python.exe')
+)
+foreach ($pat in $probePatterns) {
+    foreach ($f in @(Get-ChildItem -Path $pat -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+        if ($f.FullName -and -not $candidates.Contains($f.FullName)) { $candidates.Add($f.FullName) }
+    }
+}
+$py = $null
+$pyVersion = ''
+$pyTried = New-Object System.Collections.Generic.List[string]
+foreach ($cand in $candidates) {
+    try {
+        $v = & $cand -c "import sys,pefile;print(sys.version.split()[0])" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $v) { $py = $cand; $pyVersion = (@($v)[0]).ToString().Trim(); break }
+        $pyTried.Add(($cand + '（缺 pefile 或不可用）'))
+    } catch {
+        $pyTried.Add(($cand + '（无法执行）'))
+    }
 }
 if (-not $py) {
-    Write-Host '未找到 Python 解释器：请安装 Python 3 并加入 PATH，或在本脚本顶部写死 $py 路径。' -ForegroundColor Red
+    Write-Host '未找到可用的 Python（需 3.8+ 且已安装 pefile）。已尝试：' -ForegroundColor Red
+    foreach ($t in $pyTried) { Write-Host ('  · ' + $t) -ForegroundColor Red }
+    Write-Host '解决（任选其一）：' -ForegroundColor Yellow
+    Write-Host '  1) 给某个 Python 装上依赖：  <python.exe 路径> -m pip install pefile' -ForegroundColor Yellow
+    Write-Host '  2) 直接指定用哪个：设环境变量 DVR_TOOLKIT_PYTHON=<python.exe 完整路径> 后重新运行本脚本。' -ForegroundColor Yellow
     Read-Host '按回车关闭'
     exit
 }
@@ -268,8 +303,19 @@ if (-not (Test-Path -LiteralPath $pyScript)) { Write-Host '缺少 patch_manifest
 
 
 # 0) 识别构建 + 原版备份门槛（原版 sha 由构建表按当前文件给出）
+#    先删除旧结果文件：--check 若失败（缺依赖/清单异常）不会写文件，
+#    残留的上一次结果会被误当成当前状态（曾导致误报 applied / 旧构建号）。
+if (Test-Path -LiteralPath $resultPy) { Remove-Item -LiteralPath $resultPy -Force -ErrorAction SilentlyContinue }
 
 & $py $pyScript --check --out $resultPy | Write-Host
+
+if (-not (Test-Path -LiteralPath $resultPy)) {
+    $result.message = 'check_failed_no_output'
+    Save-State
+    Write-Host '检查失败：patch_manifest.py 没有产生结果文件（Python 依赖或清单异常）。未做任何修改。' -ForegroundColor Red
+    Read-Host '按回车关闭'
+    exit
+}
 
 $st0 = Get-Content -LiteralPath $resultPy -Raw -Encoding UTF8 | ConvertFrom-Json
 
@@ -344,8 +390,17 @@ if (-not $orig) {
 
 
 # 1) 当前状态（只读）
+if (Test-Path -LiteralPath $resultPy) { Remove-Item -LiteralPath $resultPy -Force -ErrorAction SilentlyContinue }
 
 & $py $pyScript --check --out $resultPy | Write-Host
+
+if (-not (Test-Path -LiteralPath $resultPy)) {
+    $result.message = 'check_failed_no_output'
+    Save-State
+    Write-Host '检查失败：patch_manifest.py 没有产生结果文件（Python 依赖或清单异常）。未做任何修改。' -ForegroundColor Red
+    Read-Host '按回车关闭'
+    exit
+}
 
 $st = Get-Content -LiteralPath $resultPy -Raw -Encoding UTF8 | ConvertFrom-Json
 
