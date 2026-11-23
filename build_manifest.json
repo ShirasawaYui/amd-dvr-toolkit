@@ -1,8 +1,8 @@
 {
-  "schema_version": 1,
-  "rule_version": "1.1.0",
+  "schema_version": 2,
+  "rule_version": "2.0.0",
   "created": "2026-11-23",
-  "note": "AMD DVR 引擎（AMDRSServ.exe）补丁维护统一清单：规则（rules）与构建记录（builds）分仓存放。检查/应用/恢复只从本清单查询；本文件为版本化真值源，禁止旁路硬编码表。1.1.0（P3/D13b）：补丁点与结构指纹支持按构建覆盖（build.patch_points / build.structure_invariants），补丁点漂移的新构建仅靠清单数据适配；无覆盖的构建沿用规则默认，行为与 1.0.0 逐字节一致。",
+  "note": "AMD DVR 引擎（AMDRSServ.exe）补丁维护统一清单。2.0.0：解除驱动版本限制——不再登记任何构建哈希或绝对偏移，改由定位器现场从文件内容中滑动窗口定位补丁点，配合跨代结构不变量与 self-diff 门禁放行任意同缺陷模式的新版本。本文件为静态只读真值源，运行时不写回；注入记录落 backup/auto_registry.json。旧 1.1.0 清单硬拒绝（需整包回滚，不支持新老混搭）。",
   "rules": {
     "applies_to": {
       "component": "AMDRSServ.exe (AMD DVR engine, user-mode)",
@@ -13,13 +13,15 @@
     "patches": [
       {
         "id": "classname-length",
-        "kind": "fixed_offset",
-        "offset": "0x3686B",
+        "kind": "anchor_located",
+        "anchor_hex": "41 B8 08 02 00 00",
+        "anchor_fixed_hex": "41 B8 00 01 00 00",
+        "imm_offset_in_anchor": 2,
         "old_hex": "08 02",
         "new_hex": "00 01",
         "equal_length": true,
-        "purpose": "GetClassNameW 类名读取请求 0x208 -> 0x100，修复 998 越界静默失败",
-        "scope": "规则默认（四代 26.20.15.02/.07/.12/.16）；补丁点漂移的构建在 build.patch_points 覆盖 offset/old_hex/new_hex，可带 context_pre_hex 做定位唯一性校验"
+        "purpose": "GetClassNameW 类名读取请求 0x208 -> 0x100，修复 998 越界静默失败。锚为 mov r8d, 0x208 的完整 6 字节机器码；补丁点是锚内立即数的低 2 字节",
+        "scope": "锚与补丁字节跨代恒定；补丁点绝对偏移由定位器现场给出，不再登记"
       },
       {
         "id": "manifest-uiAccess",
@@ -27,287 +29,109 @@
         "old": "uiAccess=\"true\"></requestedExecutionLevel>\r\n",
         "new": "uiAccess=\"false\"></requestedExecutionLevel>\n",
         "equal_length": true,
-        "purpose": "补丁破坏签名后 uiAccess=true 会被 Windows 拒启；true->false(+1B) 配 \r\n->\n(-1B) 保长",
-        "scope": "全族同构（unique_marker 与偏移无关）；build.patch_points['manifest-uiAccess'].at 仅作定位信息登记"
+        "purpose": "补丁破坏签名后 uiAccess=true 会被 Windows 拒启；true->false(+1B) 配 \\r\\n->\\n(-1B) 保长",
+        "scope": "全族同构，按唯一字符串标记定位，与绝对偏移无关"
       }
     ],
     "structure_invariants": {
       "machine_hex": "0x8664",
-      "sections": [
-        [
-          ".text",
-          "0x400",
-          "0x1a8678",
-          "0x1000"
-        ],
-        [
-          ".rdata",
-          "0x1a8c00",
-          "0x9ab98",
-          "0x1aa000"
-        ],
-        [
-          ".data",
-          "0x243800",
-          "0x18a14",
-          "0x245000"
-        ],
-        [
-          ".pdata",
-          "0x254800",
-          "0xf24c",
-          "0x25e000"
-        ],
-        [
-          ".fptable",
-          "0x263c00",
-          "0x100",
-          "0x26e000"
-        ],
-        [
-          ".rsrc",
-          "0x263e00",
-          "0x186c4",
-          "0x26f000"
-        ],
-        [
-          ".reloc",
-          "0x27c600",
-          "0x2998",
-          "0x288000"
-        ]
+      "section_names_order": [
+        ".text",
+        ".rdata",
+        ".data",
+        ".pdata",
+        ".fptable",
+        ".rsrc",
+        ".reloc"
       ],
-      "patch_point": {
-        "offset": "0x3686B",
-        "expect_hex": "08 02"
-      },
       "manifest_markers": {
         "old_count": 1,
         "new_count": 0
       },
       "manifest_xml_parseable": true,
+      "manifest_resource": {
+        "path": [
+          24,
+          1,
+          1033
+        ],
+        "size": "0x6a0"
+      },
       "iat_imports": [
         "GetClassNameW",
         "EnumWindows",
         "SendMessageTimeoutW"
       ],
-      "cert_offset": "0x27F000"
+      "version_string_regex": "AMD-Radeon-Driver/drivers:[0-9a-f]{40}",
+      "note": "只登记跨代恒定的形态不变量。各节区 off/vsize/va、cert_offset、补丁点 offset、uiAccess at、RT_MANIFEST 文件偏移、版本串位置、size 与三哈希一律现场提取，不进清单"
     },
-    "allowed_diff_regions": [
-      {
-        "name": "pe_header_identity",
-        "start": "0x128",
-        "end": "0x1CE",
-        "note": "TimeDateStamp / CheckSum / Security data directory"
-      },
-      {
-        "name": "rdata_build_timestamps",
-        "start": "0x2111EC",
-        "end": "0x21125F",
-        "note": "内嵌构建时间戳"
-      },
-      {
-        "name": "rdata_build_hash",
-        "start": "0x21B1F8",
-        "end": "0x21B208",
-        "note": "内嵌构建哈希"
-      },
-      {
-        "name": "rsrc_version_strings",
-        "start": "0x27BAE2",
-        "end": "0x27BDDB",
-        "note": "版本/来源串（含 AMD-Radeon-Driver/drivers:<hash>）"
-      },
-      {
-        "name": "cert_overlay",
-        "start": "0x27F000",
-        "end": "EOF",
-        "note": "Authenticode 签名覆盖区（文件末尾）"
-      }
-    ],
-    "allowed_diff_basis": "由 26.20.15.02/.07/.12/.16 四代六对原件逐字节比对聚类得出；.text 等代码区零差异（代码零改动）",
+    "locator": {
+      "strategy": "shortest_unique_window",
+      "stable_anchor_prefix_hex": "00 48 33 c4 48 89 84 24 30 02 00 00",
+      "prefix_length": 12,
+      "window_sizes": [
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12
+      ],
+      "fallback": "refuse_with_diagnostic",
+      "ambiguity": "refuse",
+      "diagnostic_file": "locate_diagnostic.json",
+      "algorithm": "pattern = PRE[12-N:] + anchor（取紧邻锚的前 N 字节，不是前缀）；off = hit + N + 2；取所有 count==1 中最小的 N；不同 N 推出不同 off 视为歧义。先扫原版锚，全失配再扫已修复锚",
+      "evidence": "2026-11-23 五代原版实测：PRE 12 字节完全一致；N=0 命中 45 次、N=2 命中 3 次、N=4/6/8/10/12 各唯一命中且推定偏移与人工登记一致（0x3686B x4 / 0x3669B）"
+    },
     "source_verification": {
-      "method": "version_string_source_hash + backup_info 交叉核对",
-      "pattern": "AMD-Radeon-Driver/drivers:<40hex>",
-      "note": "版本串只能支持 L2 候选资格，不能代替对确切原版哈希的批准"
+      "method": "format_plus_structure",
+      "checks": [
+        "FileVersion/ProductVersion 命中 AMD-Radeon-Driver/drivers:[0-9a-f]{40}",
+        "machine == 0x8664 且七个节区名称与顺序一致",
+        "IAT 含 GetClassNameW / EnumWindows / SendMessageTimeoutW",
+        "RT_MANIFEST [24,1,1033] 存在、size=0x6a0 且 XML 可解析",
+        "定位器唯一命中，补丁点字节为 08 02 或 00 01",
+        "self-diff(orig -> fixed) 恰为两处补丁点且文件等长"
+      ],
+      "signature": "report_only",
+      "note": "来源核验不再依赖 backup_info.txt 台账（新版本必然无记录）。签名有效仅作加分项写进报告、不作前置条件——打过补丁的文件签名必然失效，强制签名会卡死幂等与恢复"
     },
     "rehearsal_gates": [
       "机器架构 == 0x8664",
-      "七节区表（off/vsize/va）与不变量一致",
-      "补丁点 0x3686B == 08 02（原版形态；patched/fixed 形态不得充当官方原件）",
-      "清单标记唯一：MAN_OLD==1 且 MAN_NEW==0",
-      "RT_MANIFEST 存在且 XML 可解析",
+      "七个节区的名称与顺序与不变量一致（不校验绝对地址）",
+      "定位器唯一命中：最短唯一窗口成立，且补丁点字节为 08 02 或 00 01",
+      "清单标记：原版形态 MAN_OLD==1 且 MAN_NEW==0",
+      "RT_MANIFEST [24,1,1033] 存在、size=0x6a0 且 XML 可解析",
       "IAT 含 GetClassNameW / EnumWindows / SendMessageTimeoutW",
-      "与参照模板的全部字节差异落在 allowed_diff_regions 内",
-      "来源可核验（来源哈希命中 backup_info 或签名有效）"
+      "self-diff(输入 -> 派生终态) 恰为两处补丁点，文件大小不变"
     ],
     "levels": {
-      "L1": "完整哈希已批准且状态一致：orig 先试录、fixed 不重复写、patched 不得充当官方原件",
-      "L2": "官方来源可核验且通过全部预演门禁的新样本：仅生成候选报告（登记输入/候选完整哈希），未获批准不得写入安装目标",
-      "L3": "来源不明、结构实变、定位结果不唯一或预演超范围：只记录阻断理由，零写入"
+      "L1": "现场门禁全过：orig 自动备份并注入；fixed 幂等不重复写；patched 补齐清单修复",
+      "L3": "定位失败 / 定位歧义 / 结构不符 / 来源格式不符 / 差异越界 / 无配对备份：只记录阻断理由与诊断报告，零写入"
     },
     "write_policy": {
       "refuse_on": [
         "manifest_missing",
         "manifest_field_missing",
-        "state_conflict",
         "unsupported_rule_version",
-        "unknown_build_hash"
+        "locate_failed",
+        "locate_ambiguous",
+        "structural_gate_failed",
+        "source_format_failed",
+        "self_diff_out_of_scope",
+        "no_paired_backup"
       ],
-      "no_fallback": "清单不可用时所有写操作必须拒绝；禁止回退读旧硬编码表继续写",
-      "candidate_not_approval": "候选报告（L2）不构成写入授权；须经审批绑定确切原版哈希后方可试补",
-      "approval_states": {
-        "approved": "转正式：B 臂 6/6 验收后的终态",
-        "candidate": "已登记候选（U05 审批后新增）：可凭审批绑定进入试补，不等于转正式",
-        "holdout": "留出测试用",
-        "rejected": "拒绝"
-      },
-      "trial_write_requires": "U05 审批绑定（目标路径+原版与候选终态哈希+规则版本+范围）+ 操作者授权；与 approval=candidate 记录并存才可试补"
+      "no_fallback": "清单不可用或定位失败时拒绝一切写入；禁止回退读任何硬编码构建表、禁止按版本串或文件长度猜测补丁点",
+      "locate_failed_action": "生成 locate_diagnostic.json（含 7 个窗口的命中数/位置/推定偏移、PE 结构事实、三哈希），提示操作者把报告带回对话",
+      "already_fixed_action": "零写入，正常退出；不得因签名失效而重新注入"
+    },
+    "auto_register": {
+      "target": "backup/auto_registry.json",
+      "approval": "approved",
+      "atomic_write": "tmp+os.replace+readback",
+      "backup_name_pattern": "AMDRSServ.exe.orig.<yyyyMMdd-HHmmss>.<orig_sha12>.bak",
+      "note": "approval 在 2.0.0 已无判定作用，仅为审计标签。台账损坏不影响注入能力，只让恢复入口退回遍历 backup 反派生的慢路"
     }
-  },
-  "builds": [
-    {
-      "name": "26.20.15.02",
-      "rule_version": "1.0.0",
-      "size": 2628872,
-      "hashes": {
-        "orig": "0f28b30898024e49709f5d90ce64d6616ff2fb71f8822f394eafce05d5e450c9",
-        "patched": "1ae3fcc541677b70ad210370453f7ece4a4b4895e1b173327ab2df8ad88194ba",
-        "fixed": "72099cb617109805d5fb79cc345ee3908bf1ec27c6b728df84ecf0b8f7a5f840"
-      },
-      "source": "backup_info orig 20261017-073322: version=26.20.15.02;2407964;26.20.15.02;AMD-Radeon-Driver/drivers:f74fad3f870ce916e432e3806b748ad634974ef4",
-      "source_hash": "f74fad3f870ce916e432e3806b748ad634974ef4",
-      "approval": "approved",
-      "approval_note": "P0 样本账 2026-11-23 复核通过（实物+派生 12/12）"
-    },
-    {
-      "name": "26.20.15.07",
-      "rule_version": "1.0.0",
-      "size": 2628872,
-      "hashes": {
-        "orig": "ff26b09aaea6ef0fd1154240341ae4a545799af01cef51877617cf8006fc3528",
-        "patched": "0dc22efa5ab621756ed1246abc975abf6a3347183bc06108078320068430447e",
-        "fixed": "ae4f3058c9ccf1e822b479f5c161d10a886cbc3f973cfd9aeeec4791aa66156e"
-      },
-      "source": "backup_info orig 20261023-132652: version=26.20.15.07;2418581;26.20.15.07;AMD-Radeon-Driver/drivers:a9c55ce77e11bb962ab1ce58f62cddca16fc89ab",
-      "source_hash": "a9c55ce77e11bb962ab1ce58f62cddca16fc89ab",
-      "approval": "approved",
-      "approval_note": "P0 样本账 2026-11-23 复核通过"
-    },
-    {
-      "name": "26.20.15.12",
-      "rule_version": "1.0.0",
-      "size": 2628880,
-      "hashes": {
-        "orig": "463724dd1f45edc1e6e738adee52bf9a33bdabe9156dd3fdcac00c48e95bdadf",
-        "patched": "4804a207edb82ab2750f8d8c58f0007f5231858e9dcc967e7e2b89bdfff11c4a",
-        "fixed": "10f3a9049dfa96882f073c18d14cc2967f4d936475820d7bad70aee76993e2b1"
-      },
-      "source": "backup_info orig 20261101-134830: version=26.20.15.12;2421854;26.20.15.12;AMD-Radeon-Driver/drivers:ac7b5433d4234d6ae05eb8d54d165983014c06f1",
-      "source_hash": "ac7b5433d4234d6ae05eb8d54d165983014c06f1",
-      "approval": "approved",
-      "approval_note": "P0 样本账 2026-11-23 复核通过"
-    },
-    {
-      "name": "26.20.15.16",
-      "rule_version": "1.0.0",
-      "size": 2627480,
-      "hashes": {
-        "orig": "5808eed28beea6d9d218ce61905bec617d2cf9e34462f9132f36629a4fbbb6d5",
-        "patched": "0d8379ce16844321efb96ed9d03e019249216c613821a6816fef1b952707a883",
-        "fixed": "c726d431ba042c75d7b956abb079af3dab294a218893bc08b0b37b1c9b7fe404"
-      },
-      "source": "backup_info orig 20261113-152143: version=26.20.15.16;2429542;26.20.15.16;AMD-Radeon-Driver/drivers:1144f53b6368c73782202e5b9d2b86ae7923e5dd",
-      "source_hash": "1144f53b6368c73782202e5b9d2b86ae7923e5dd",
-      "approval": "approved",
-      "approval_note": "P0 样本账 2026-11-23 复核通过；P1 留出测试时以测试清单隐藏本条（生产清单不删）"
-    },
-    {
-      "name": "26.20.29.02",
-      "rule_version": "1.1.0",
-      "size": 2670488,
-      "hashes": {
-        "orig": "3f1f9ce1bc5aeff6f51a1cd649b01cba45606f3b26d609cb4b8173b91dbe848c",
-        "patched": "0863b4d68ea222753c2bc76d5b687686a7e0580f2430e2cdefe437ac3b4fa564",
-        "fixed": "1f59bc9a368fb0345134242ef1731270bbeea0cbef710692cb8d6b0f0dea3311"
-      },
-      "patch_points": {
-        "classname-length": {
-          "offset": "0x3669B",
-          "old_hex": "08 02",
-          "new_hex": "00 01",
-          "context_pre_hex": "48 89 84 24 30 02 00 00 41 B8"
-        },
-        "manifest-uiAccess": {
-          "at": "0x28683c"
-        }
-      },
-      "structure_invariants": {
-        "machine_hex": "0x8664",
-        "sections": [
-          [
-            ".text",
-            "0x400",
-            "0x1b1a18",
-            "0x1000"
-          ],
-          [
-            ".rdata",
-            "0x1b2000",
-            "0x9b8bc",
-            "0x1b3000"
-          ],
-          [
-            ".data",
-            "0x24da00",
-            "0x18b94",
-            "0x24f000"
-          ],
-          [
-            ".pdata",
-            "0x25ec00",
-            "0xf690",
-            "0x268000"
-          ],
-          [
-            ".fptable",
-            "0x26e400",
-            "0x100",
-            "0x278000"
-          ],
-          [
-            ".rsrc",
-            "0x26e600",
-            "0x186c4",
-            "0x279000"
-          ],
-          [
-            ".reloc",
-            "0x286e00",
-            "0x29f8",
-            "0x292000"
-          ]
-        ],
-        "patch_point": {
-          "offset": "0x3669B",
-          "expect_hex": "08 02"
-        },
-        "manifest_markers": {
-          "old_count": 1,
-          "new_count": 0
-        },
-        "manifest_xml_parseable": true,
-        "iat_imports": [
-          "GetClassNameW",
-          "EnumWindows",
-          "SendMessageTimeoutW"
-        ],
-        "cert_offset": "0x289800"
-      },
-      "source": "实机取样 2026-11-23: version=26.20.29.02;2432778;26.20.29.02;AMD-Radeon-Driver/drivers:19ec2a111d656f325f5246df57702e14710cc43e；Authenticode 有效（AMD 签名，Get-AuthenticodeSignature Status=Valid）",
-      "source_hash": "19ec2a111d656f325f5246df57702e14710cc43e",
-      "approval": "approved",
-      "approval_note": "B 臂验收通过 2026-11-23 20:39（界面中文 + 录制落盘 unknown_2026.11.23-20.39.mp4，moov 完整；Failed=0；事务 TXN-20261123-182939-397dc5 已提交）；A 臂 6/6 失败签名见 D13/A臂执行记录"
-    }
-  ]
+  }
 }

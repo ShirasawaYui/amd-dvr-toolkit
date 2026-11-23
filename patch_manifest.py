@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AMDRSServ.exe 修复器（清单驱动版）：2 字节长度补丁 + 清单 uiAccess 修复。
+"""AMDRSServ.exe 修复器（2.0.0 通用路径）：2 字节长度补丁 + 清单 uiAccess 修复。
 
-与旧版差异（P1 D04）：不再内嵌 BUILDS 硬编码表，统一从 build_manifest.json
-查询（dvr_core.load_manifest，fail-closed）。清单缺失/字段缺失/状态冲突/
-规则版本不支持时，--check 报 manifest_error 且 --apply 拒绝一切写入，
-禁止回退旧硬编码表。
+与 1.1.0 的差异：
+  - 不再按构建哈希识别，改由 dvr_core.locate_patch_point 现场滑动窗口定位补丁点
+  - 写前门禁由「结果 == 清单登记的完整哈希」改为「self-diff 恰为两处补丁点」
+  - 成功后原子写 backup/auto_registry.json 审计台账（不影响注入能力）
+  - 清单不可用时 --check 报 manifest_error 且 --apply 拒绝一切写入（fail-closed）
 
-背景（详见修复报告 §15）：
-  - 类名读取越界：把 0x208(520字符) 改为 0x100(256字符)（偏移按构建登记，
-    四代为 0x3686B；26.20.29.02 重定位至 0x3669B，见 build_manifest.json）
+补丁内容（跨代恒定）：
+  - 类名读取越界：mov r8d, 0x208 -> 0x100（08 02 -> 00 01）
   - uiAccess 门槛：签名失效后 uiAccess=true 会被 Windows 拒启，须同步改 false
 
-处理状态（自动识别；所有改写均为等长替换、文件大小不变）：
-  - original_untouched ：原始文件 → --apply 一并完成两步
+处理状态（现场形态识别，不依赖哈希白名单）：
+  - original_untouched ：原版 → --apply 一并完成两步
   - needs_manifest_fix ：已打 2 字节补丁、清单未改 → --apply 只改清单
-  - already_fixed      ：两步均已完成 → 不动作
-  - unexpected / manifest_error ：拒绝动作
+  - already_fixed      ：两步均已完成 → 不动作（零写入）
+  - unexpected / manifest_error ：拒绝动作并写 locate_diagnostic.json
 
 用法: python patch_manifest.py --check|--apply [--exe PATH] [--manifest PATH] --out X.json
 """
 import argparse
 import hashlib
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pefile
@@ -34,6 +36,10 @@ import dvr_core as core  # noqa: E402
 
 DEFAULT_EXE = r"C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe"
 DEFAULT_MANIFEST = Path(__file__).resolve().parent / "build_manifest.json"
+HERE = Path(__file__).resolve().parent
+BACKUP_DIR = HERE / "backup"
+REGISTRY = BACKUP_DIR / "auto_registry.json"
+DIAGNOSTIC = HERE / "locate_diagnostic.json"
 
 
 def sha256(b: bytes) -> str:
@@ -53,19 +59,23 @@ def manifest_region(data: bytes):
     return None
 
 
-def build_final(data: bytes, state: str, build, rules):
-    """在内存中构建最终文件并全面校验，返回 (bytes, steps)。
+def build_final(data: bytes, state: str, rules: dict, off: int):
+    """在内存中构建最终文件并全面校验，返回 (bytes, steps, sites)。
 
-    1.1.0：补丁点取 build.patch_points 覆盖（无覆盖用规则默认），
-    使补丁点漂移的新构建仅靠清单数据适配，脚本不再为同族新版改动。
+    2.0.0：不再比对任何清单哈希，改用 self-diff —— 输入到结果的所有差异
+    必须落在「长度补丁点」与「uiAccess 标记」这两个已知区间内，且文件等长。
     """
-    off, old_b, new_b, man_old, man_new = core._patch_pieces(rules, (build or {}).get("patch_points"))
+    off, old_b, new_b, man_old, man_new = core._patch_pieces(rules, off=off)
     cur, steps = data, []
     if state == "original_untouched":
+        if cur[off:off + len(old_b)] != old_b:
+            raise RuntimeError("length marker not found at %s" % hex(off))
         cur = cur[:off] + new_b + cur[off + len(old_b):]
-        if sha256(cur) != build["hashes"]["patched"]:
-            raise RuntimeError("length-step intermediate verify failed")
+        d1 = core.diff_blocks(data, cur)
+        if not all(off <= s and e <= off + len(old_b) for s, e in d1):
+            raise RuntimeError("length-step self-diff out of scope: %s" % d1)
         steps.append("length %s: %s -> %s" % (hex(off), old_b.hex(" "), new_b.hex(" ")))
+
     i = cur.find(man_old)
     if i < 0:
         raise RuntimeError("manifest marker not found")
@@ -73,13 +83,95 @@ def build_final(data: bytes, state: str, build, rules):
     steps.append("manifest: uiAccess true -> false")
     if len(cur) != len(data):
         raise RuntimeError("file size changed")
+
     reg = manifest_region(cur)
     if not reg:
         raise RuntimeError("manifest region lost")
     MD.parseString(cur[reg[0]:reg[0] + reg[1]])
-    if sha256(cur) != build["hashes"]["fixed"]:
-        raise RuntimeError("final sha mismatch (expected fixed build)")
-    return cur, steps
+
+    sites = sorted([(off, off + len(old_b)), (i, i + len(man_old))])
+    d2 = core.diff_blocks(data, cur)
+    for s, e in d2:
+        if not any(rs <= s and e <= re_ for rs, re_ in sites):
+            raise RuntimeError("final self-diff out of scope [%s..%s)" % (hex(s), hex(e)))
+    if len(d2) != 2:
+        raise RuntimeError("final self-diff expected 2 blocks, got %d: %s" % (len(d2), d2))
+    return cur, steps, sites
+
+
+def write_diagnostic(res, diagnostic_path=None):
+    """定位失败时把完整诊断写成文件，供操作者带回对话。失败不影响主流程。"""
+    try:
+        d = dict(res.get("diagnostic") or {})
+        d["exe"] = res.get("exe")
+        d["result"] = res.get("result")
+        d["message"] = res.get("message")
+        Path(diagnostic_path or DIAGNOSTIC).write_text(
+            json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def find_backup_for(orig_sha):
+    """在 backup 里找与输入原版哈希吻合的 .bak（供台账填 backup_file）。"""
+    try:
+        for p in sorted(BACKUP_DIR.glob("*.bak"), key=lambda x: x.stat().st_mtime, reverse=True):
+            if sha256(p.read_bytes()) == orig_sha:
+                return p.name
+    except Exception:
+        pass
+    return None
+
+
+def auto_register(res, manifest, input_sha, final_sha, located, state,
+                  registry_path=None):
+    """原子写审计台账（默认 backup/auto_registry.json）。
+
+    --registry 可覆盖路径，供回归在隔离目录里测原子写，不污染真实台账。
+    台账损坏不影响注入能力：加载失败时把坏文件改名留档，从空列表重建。
+    """
+    reg_path = Path(registry_path) if registry_path else REGISTRY
+    entries = []
+    if reg_path.is_file():
+        try:
+            obj = json.loads(reg_path.read_text(encoding="utf-8"))
+            entries = obj if isinstance(obj, list) else (obj.get("entries") or [])
+        except Exception:
+            try:
+                reg_path.rename(reg_path.with_name(
+                    reg_path.name + ".bad.%s" % time.strftime("%Y%m%d-%H%M%S")))
+            except Exception:
+                pass
+            entries = []
+    entry = {
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "rule_version": manifest.get("rule_version"),
+        "version": res.get("build"),
+        "size": res.get("size"),
+        "approval": manifest["rules"]["auto_register"]["approval"],
+        "exe": res.get("exe"),
+        "input_state": state,
+        "hashes": {
+            "input": input_sha,
+            "orig": input_sha if state == "original_untouched" else None,
+            "fixed": final_sha,
+        },
+        "located": {
+            "offset": hex(located["off"]) if located.get("off") is not None else None,
+            "chosen_N": located.get("chosen_N"),
+            "anchor_kind": located.get("anchor_kind"),
+        },
+        "backup_file": find_backup_for(input_sha),
+    }
+    entries.append(entry)
+    tmp = reg_path.with_name(reg_path.name + ".tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, reg_path)
+    # 复读校验：写坏就留证并报错（不影响已完成的注入）
+    back = json.loads(reg_path.read_text(encoding="utf-8"))
+    if not isinstance(back, list) or len(back) != len(entries):
+        raise RuntimeError("auto_registry readback mismatch")
+    return entry
 
 
 def main():
@@ -90,6 +182,8 @@ def main():
     ap.add_argument("--exe", default=DEFAULT_EXE)
     ap.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     ap.add_argument("--out", required=True)
+    ap.add_argument("--registry", help="覆盖审计台账路径（回归隔离用）")
+    ap.add_argument("--diagnostic", help="覆盖定位诊断报告路径（回归隔离用）")
     a = ap.parse_args()
 
     exe = Path(a.exe)
@@ -108,37 +202,55 @@ def main():
     rules = manifest["rules"]
     try:
         data = exe.read_bytes()
-        c = core.classify(data, manifest)
-        build = next((b for b in manifest["builds"] if b["name"] == c["build"]), None)
+        c = core.classify(data, manifest, str(exe))
+        loc = c["located"]
         state = {"orig": "original_untouched",
                  "patched": "needs_manifest_fix",
                  "fixed": "already_fixed"}.get(c["state"], "unexpected")
-        res.update(result=state, message=c["message"], sha_before=c["sha256"],
-                   build=c["build"],
-                   sha_orig=(build["hashes"]["orig"] if build else None))
+        res.update(
+            result=state, message=c["message"], sha_before=c["sha256"],
+            build=c["build"], sha_orig=c["sha256"],   # 现场哈希，不再是清单登记值
+            size=len(data),
+            located=({"ok": loc["ok"], "off": loc["off"],
+                      "chosen_N": loc["chosen_N"], "anchor_kind": loc["anchor_kind"]}
+                     if isinstance(loc, dict) else None),
+            diagnostic=c.get("diagnostic"),
+        )
+        if state == "unexpected":
+            write_diagnostic(res, a.diagnostic)
 
         if a.apply and state in ("original_untouched", "needs_manifest_fix"):
-            final, steps = build_final(data, state, build, rules)
+            if not loc["ok"]:
+                raise RuntimeError("locator unavailable, refuse to write")
+            off = loc["off"]
+            final, steps, sites = build_final(data, state, rules, off)
             res["steps"] = steps
+            res["sites"] = [[hex(s), hex(e)] for s, e in sites]
             res["sha_after"] = sha256(final)
+
+            _, _, new_b, _, man_new = core._patch_pieces(rules, off=off)
             writes = []
             if state == "original_untouched":
-                pieces = core._patch_pieces(rules, (build or {}).get("patch_points"))
-                writes.append((pieces[0], pieces[2]))
-                man_new = pieces[4]
-            else:
-                man_new = core._patch_pieces(rules, (build or {}).get("patch_points"))[4]
+                writes.append((off, new_b))
             writes.append((final.find(man_new), man_new))
             with open(exe, "r+b") as f:
                 for offw, buf in writes:
                     f.seek(offw)
                     f.write(buf)
                 f.flush()
-            back = exe.read_bytes()
-            if sha256(back) != res["sha_after"]:
+            back_bytes = exe.read_bytes()
+            if sha256(back_bytes) != res["sha_after"]:
                 raise RuntimeError("readback mismatch after write")
+
             res["result"] = "applied"
             res["message"] = "修复完成：" + "; ".join(steps)
+            try:
+                res["auto_registered"] = auto_register(
+                    res, manifest, c["sha256"], res["sha_after"], loc, state,
+                    a.registry)
+            except Exception as e:
+                # 台账失败不回滚已完成的注入，但必须在结果里显式留痕
+                res["auto_register_error"] = str(e)
         elif a.apply:
             res["sha_after"] = res["sha_before"]
     except PermissionError as e:

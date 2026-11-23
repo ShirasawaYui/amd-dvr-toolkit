@@ -302,7 +302,7 @@ if (-not (Test-Path -LiteralPath $pyScript)) { Write-Host '缺少 patch_manifest
 
 
 
-# 0) 识别构建 + 原版备份门槛（原版 sha 由构建表按当前文件给出）
+# 0) 识别文件形态 + 原版备份门槛（2.0.0：sha_orig 是现场哈希，不再是清单登记值）
 #    先删除旧结果文件：--check 若失败（缺依赖/清单异常）不会写文件，
 #    残留的上一次结果会被误当成当前状态（曾导致误报 applied / 旧构建号）。
 if (Test-Path -LiteralPath $resultPy) { Remove-Item -LiteralPath $resultPy -Force -ErrorAction SilentlyContinue }
@@ -319,13 +319,15 @@ if (-not (Test-Path -LiteralPath $resultPy)) {
 
 $st0 = Get-Content -LiteralPath $resultPy -Raw -Encoding UTF8 | ConvertFrom-Json
 
-if ($st0.result -eq 'unexpected' -or -not $st0.sha_orig) {
+# 2.0.0：未登记的新原版返回 original_untouched，不能像旧架构那样按 unexpected 中止。
+if ($st0.result -notin @('original_untouched', 'needs_manifest_fix', 'already_fixed')) {
 
     $result.message = 'aborted_state: ' + $st0.result
 
     Save-State
 
-    Write-Host '文件状态不符合预期（如 AMD 已更新程序，或检查失败），未做任何修改。请保存本窗口输出。' -ForegroundColor Red
+    Write-Host ('定位或形态识别失败：' + $st0.message) -ForegroundColor Red
+    Write-Host '未做任何修改。诊断报告已写入 locate_diagnostic.json，请把该文件带回对话。' -ForegroundColor Yellow
 
     Read-Host '按回车关闭'
 
@@ -353,7 +355,7 @@ if (-not $orig) {
 
         $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
 
-        $bakName = 'AMDRSServ.exe.orig.' + $ts + '.bak'
+        $bakName = 'AMDRSServ.exe.orig.' + $ts + '.' + $origSha.Substring(0, 12) + '.bak'
 
         Copy-Item -LiteralPath $target -Destination (Join-Path $backupDir $bakName) -Force
 
@@ -379,7 +381,7 @@ if (-not $orig) {
 
     Save-State
 
-    Write-Host ('未找到原版备份（backup 目录中没有与构建 ' + $st0.build + ' 吻合的 .bak），且当前文件不是原版、无法自动备份。未做任何修改。') -ForegroundColor Red
+    Write-Host ('未找到原版备份（backup 目录里没有与当前文件 sha ' + $origSha.Substring(0, 12) + ' 吻合的 .bak），且当前文件不是原版、无法自动建档。未做任何修改。') -ForegroundColor Red
 
     Read-Host '按回车关闭'
 
@@ -416,7 +418,8 @@ if ($st.result -notin @('original_untouched', 'needs_manifest_fix', 'already_fix
 
     Save-State
 
-    Write-Host '文件状态不符合预期（如 AMD 已更新程序，或检查失败），未做任何修改。请保存本窗口输出。' -ForegroundColor Red
+    Write-Host ('定位或形态识别失败：' + $st.message) -ForegroundColor Red
+    Write-Host '未做任何修改。诊断报告已写入 locate_diagnostic.json，请把该文件带回对话。' -ForegroundColor Yellow
 
     Read-Host '按回车关闭'
 
@@ -514,7 +517,7 @@ if ($st.result -ne 'already_fixed') {
 
     Write-Host ('改写后 sha256: ' + $edit.sha_after)
 
-    Add-Content -LiteralPath (Join-Path $backupDir 'backup_info.txt') -Value ('fixed {0}  sha256={1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $edit.sha_after)
+    Add-Content -LiteralPath (Join-Path $backupDir 'backup_info.txt') -Value ('fixed {0}  sha256={1}  backup={2}  approval=approved (auto, 现场定位)' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $edit.sha_after, $orig.Name)
 
     Start-Sleep -Seconds 3
 
@@ -607,6 +610,14 @@ if (-not (Test-Writable)) {
 Copy-Item -LiteralPath $orig.FullName -Destination $target -Force
 
 $h2 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLower()
+
+if ($h2 -ne $origSha) {
+    $result.message = 'rollback_hash_mismatch'
+    Save-State
+    Write-Host ('回滚校验不符！期望 ' + $origSha + '，实际 ' + $h2 + '。请保存本窗口输出。') -ForegroundColor Red
+    Read-Host '按回车关闭'
+    exit
+}
 
 Write-Host ('已恢复原版: ' + $orig.Name + ' | sha256=' + $h2)
 

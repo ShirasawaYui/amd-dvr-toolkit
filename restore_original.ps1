@@ -20,8 +20,8 @@ $target    = 'C:\Program Files\AMD\CNext\CNext\AMDRSServ.exe'
 $engineCmd = 'C:\Program Files\AMD\CNext\CNext\RSServCmd.exe'
 $backupDir = Join-Path $PSScriptRoot 'backup'
 $stateFile = Join-Path $PSScriptRoot 'restore_state.json'
-# 构建表统一从 build_manifest.json 查询（P1 D04；fail-closed，不回退硬编码表）。
-# 清单缺失/坏态/规则版本不支持时拒绝一切动作。
+# 规则清单统一从 build_manifest.json 查询（2.0.0：静态只读，无 builds）。
+# 清单缺失/坏态/规则版本不支持时拒绝一切动作；恢复目标由 match-backup 现场配对。
 $manifestPath = Join-Path $PSScriptRoot 'build_manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) {
     Write-Host ('清单缺失（manifest_missing）：' + $manifestPath + '。拒绝动作，不回退硬编码表。') -ForegroundColor Red
@@ -33,25 +33,34 @@ try {
     Write-Host ('清单解析失败（manifest_parse_error）：' + $_.Exception.Message + '。拒绝动作。') -ForegroundColor Red
     Read-Host '按回车关闭'; exit 1
 }
-$supportedRuleVersions = @('1.0.0', '1.1.0')   # 1.1.0 = per-build 补丁点（26.20.29.02 起）
+$supportedRuleVersions = @('2.0.0')   # 2.0.0 = 滑动窗口通用定位，无构建哈希白名单
 if ($supportedRuleVersions -notcontains [string]$manifest.rule_version) {
     Write-Host ('规则版本不支持（unsupported_rule_version）：' + $manifest.rule_version + '。拒绝动作。') -ForegroundColor Red
     Read-Host '按回车关闭'; exit 1
 }
-if (-not $manifest.builds -or $manifest.builds.Count -eq 0) {
-    Write-Host '清单无构建记录（builds_empty）。拒绝动作。' -ForegroundColor Red
-    Read-Host '按回车关闭'; exit 1
-}
-$builds = @()
-foreach ($b in $manifest.builds) {
-    foreach ($k in @('name','orig','patched','fixed')) {
-        $v = if ($k -eq 'name') { $b.name } else { $b.hashes.$k }
-        if (-not $v) {
-            Write-Host ('清单字段缺失（field_missing）：builds.' + $b.name + '.' + $k + '。拒绝动作。') -ForegroundColor Red
-            Read-Host '按回车关闭'; exit 1
-        }
+# 2.0.0 清单无 builds；恢复目标由 dvr_tool.py match-backup 现场反派生配对。
+# 解释器必须与注入入口同策略：逐个试 import pefile，第一个成功的才用。
+$py = $null
+$candidates = New-Object System.Collections.Generic.List[string]
+if ($env:DVR_TOOLKIT_PYTHON) { $candidates.Add($env:DVR_TOOLKIT_PYTHON) }
+foreach ($pyName in @('python', 'py', 'python3')) {
+    foreach ($c in @(Get-Command $pyName -ErrorAction SilentlyContinue)) {
+        if ($c.Source -and -not $candidates.Contains($c.Source)) { $candidates.Add($c.Source) }
     }
-    $builds += @{ name = $b.name; orig = $b.hashes.orig; patched = $b.hashes.patched; fixed = $b.hashes.fixed }
+}
+foreach ($pat in @((Join-Path $env:LOCALAPPDATA 'Programs\Python\Python*\python.exe'),
+                   (Join-Path $env:USERPROFILE '.workbuddy\binaries\python\versions\*\python.exe'))) {
+    foreach ($c in @(Get-ChildItem -Path $pat -ErrorAction SilentlyContinue)) {
+        if (-not $candidates.Contains($c.FullName)) { $candidates.Add($c.FullName) }
+    }
+}
+foreach ($cand in $candidates) {
+    $v = & $cand -c "import sys,pefile;print(sys.version.split()[0])" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $v) { $py = $cand; break }
+}
+if (-not $py) {
+    Write-Host '未找到可用 Python 解释器（需能 import pefile）。拒绝动作。' -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
 }
 
 function Save-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
@@ -99,31 +108,42 @@ $state = [ordered]@{ time_start = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); ac
 
 Write-Host '===== 恢复原版 AMDRSServ.exe =====' -ForegroundColor Cyan
 $curSha = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLower()
-$build = $null
-foreach ($b in $builds) {
-    if ($curSha -eq $b.orig -or $curSha -eq $b.patched -or $curSha -eq $b.fixed) { $build = $b; break }
-}
-if (-not $build) {
-    $state.message = 'unknown_build'
+
+# 2.0.0：不再靠「当前哈希命中某条构建的三哈希」反查代际。
+# 改为把 backup 里每份原版内存派生 patched/fixed，看哪份能推出当前文件。
+$matchJson = Join-Path $PSScriptRoot 'restore_match.json'
+if (Test-Path -LiteralPath $matchJson) { Remove-Item -LiteralPath $matchJson -Force -ErrorAction SilentlyContinue }
+& $py (Join-Path $PSScriptRoot 'dvr_tool.py') match-backup --exe $target --backup-dir $backupDir --manifest $manifestPath --out $matchJson | Out-Null
+if (-not (Test-Path -LiteralPath $matchJson)) {
+    $state.message = 'match_backup_no_output'
     Save-State $state
-    Write-Host '当前文件与已知构建均不匹配（可能 AMD 已更新），无法确定该还原哪一代原版。未做任何修改。' -ForegroundColor Red
-    Read-Host '按回车关闭'
-    exit
+    Write-Host '配对检查没有产生结果（Python 依赖或清单异常）。未做任何修改。' -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
 }
-$origSha = $build.orig
-$state.build = $build.name
-Write-Host ('当前构建: ' + $build.name)
-$orig = $null
-foreach ($b in (Get-ChildItem -LiteralPath $backupDir -Filter '*.bak' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
-    $h = (Get-FileHash -LiteralPath $b.FullName -Algorithm SHA256).Hash.ToLower()
-    if ($h -eq $origSha) { $orig = $b; break }
+$mb = Get-Content -LiteralPath $matchJson -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($mb.ambiguous -or -not $mb.orig_sha -or -not $mb.backup_file) {
+    $state.message = if ($mb.ambiguous) { 'ambiguous_backup' } else { 'unknown_build' }
+    Save-State $state
+    Write-Host ('无法唯一配对原版备份（' + $mb.refuse_reason + '）。未做任何修改。') -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
 }
+$origSha = $mb.orig_sha.ToLower()
+$state.build = $null
+Write-Host ('已配对原版: ' + $mb.backup_file + ' | sha=' + $origSha.Substring(0, 12))
+
+$orig = Get-Item -LiteralPath (Join-Path $backupDir $mb.backup_file) -ErrorAction SilentlyContinue
 if (-not $orig) {
     $state.message = 'no_valid_backup'
     Save-State $state
-    Write-Host ('未找到构建 ' + $build.name + ' 的有效原始备份，未做任何修改。') -ForegroundColor Red
-    Read-Host '按回车关闭'
-    exit
+    Write-Host ('配对到的备份文件不存在：' + $mb.backup_file + '。未做任何修改。') -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
+}
+$hOrig = (Get-FileHash -LiteralPath $orig.FullName -Algorithm SHA256).Hash.ToLower()
+if ($hOrig -ne $origSha) {
+    $state.message = 'backup_hash_mismatch'
+    Save-State $state
+    Write-Host '配对备份的实际哈希与登记不符，拒绝覆盖。' -ForegroundColor Red
+    Read-Host '按回车关闭'; exit 1
 }
 
 if (-not (Test-Writable)) {

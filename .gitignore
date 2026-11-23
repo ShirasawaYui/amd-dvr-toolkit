@@ -4,7 +4,12 @@ backup/
 last_fix_state.json
 last_fix_edit.json
 last_manifest_edit.json
+last_check.json
 restore_state.json
+locate_diagnostic.json
+auto_registry.json
+auto_registry.json.bad.*
+*.tmp.*
 unblock_*.log
 __pycache__/
 *.pyc
