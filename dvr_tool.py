@@ -193,12 +193,16 @@ def cmd_regress(a):
             sp = Path(a.samples_dir) / name / ("AMDRSServ.exe.%s.derived.exe" % st)
             samples[(name, st)] = sp.read_bytes()
 
-    ref_bytes = samples[("26.20.15.12", core.STATE_ORIG)] if ("26.20.15.12", core.STATE_ORIG) in samples \
-        else samples[("26.20.15.16", core.STATE_ORIG)]
-    # 参照模板取清单中最后一条已批准构建的 orig（留出清单下即 .12）
-    for b in reversed(hold_manifest["builds"]):
-        ref_bytes = samples[(b["name"], core.STATE_ORIG)]
-        break
+    # 参照模板：取「隐藏构建在**生产清单**里的前一条同族构建」的 orig。
+    # 不能取留出清单最后一条 —— 清单新增构建后（如 26.20.29.02 排在 .16 之后），
+    # 最后一条会跨代，与隐藏构建（.16）差异过大，会把合法同族原版误判为 L3。
+    _names = [b["name"] for b in manifest["builds"]]
+    if a.hide_build in _names:
+        _i = _names.index(a.hide_build)
+        _ref_name = _names[_i - 1] if _i > 0 else _names[-1]
+    else:
+        _ref_name = _names[-1]
+    ref_bytes = samples[(_ref_name, core.STATE_ORIG)]
 
     cases = []
     targets = []
@@ -208,13 +212,15 @@ def cmd_regress(a):
         p.write_bytes(path_bytes)
         targets.append(p)
 
-    # C1: 四代三态 12/12（全量清单）
+    # C1: 全量清单三态（approved → L1，candidate → L2）
     for (name, st), data in sorted(samples.items()):
         track(data, "c1_%s_%s.bin" % (name.replace(".", "_"), st))
         c = core.classify(data, manifest)
         g = core.grade(data, manifest, ref_bytes, a.backup_info, None)
+        _b = next((x for x in manifest["builds"] if x["name"] == name), {})
+        _expect_lvl = "L1" if _b.get("approval") == "approved" else "L2"
         _case(cases, "C1-%s-%s" % (name, st), "全量清单分类",
-              "%s/%s/L1" % (name, st),
+              "%s/%s/%s" % (name, st, _expect_lvl),
               "%s/%s/%s" % (c["build"], c["state"], g["level"]))
 
     # C2: 留出清单分流
@@ -240,8 +246,10 @@ def cmd_regress(a):
         if name == hide:
             continue
         g = core.grade(data, hold_manifest, ref_bytes, a.backup_info, None)
-        _case(cases, "C2b-%s-%s" % (name, st), "留出清单下已批准基线仍 L1",
-              "L1", g["level"])
+        _hb = next((x for x in hold_manifest["builds"] if x["name"] == name), {})
+        _h_expect = "L1" if _hb.get("approval") == "approved" else "L2"
+        _case(cases, "C2b-%s-%s" % (name, st), "留出清单基线分级（approved=L1 / candidate=L2）",
+              _h_expect, g["level"])
 
     # C3 N02 重装覆盖：同版 fixed 记录 → 当前 orig
     prev = {"driver_package_version": "26.20.15.12",

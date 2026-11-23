@@ -32,7 +32,7 @@ try {
     Write-Host ('清单解析失败（manifest_parse_error）：' + $_.Exception.Message + '。拒绝动作。') -ForegroundColor Red
     Read-Host '按回车关闭'; exit 1
 }
-$supportedRuleVersions = @('1.0.0')
+$supportedRuleVersions = @('1.0.0', '1.1.0')   # 1.1.0 = per-build 补丁点（26.20.29.02 起）
 if ($supportedRuleVersions -notcontains [string]$manifest.rule_version) {
     Write-Host ('规则版本不支持（unsupported_rule_version）：' + $manifest.rule_version + '。拒绝动作。') -ForegroundColor Red
     Read-Host '按回车关闭'; exit 1

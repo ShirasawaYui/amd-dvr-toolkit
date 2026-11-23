@@ -306,8 +306,8 @@
       },
       "source": "实机取样 2026-11-23: version=26.20.29.02;2432778;26.20.29.02;AMD-Radeon-Driver/drivers:19ec2a111d656f325f5246df57702e14710cc43e；Authenticode 有效（AMD 签名，Get-AuthenticodeSignature Status=Valid）",
       "source_hash": "19ec2a111d656f325f5246df57702e14710cc43e",
-      "approval": "candidate",
-      "approval_note": "U05 已审批（2026-11-23，审核者=用户）：批准进入试补，绑定=目标路径 C://Program Files\\AMD\\CNext\\CNext\\AMDRSServ.exe / 写前原版 3f1f9ce1bc5aeff6f51a1cd649b01cba45606f3b26d609cb4b8173b91dbe848c / 候选终态 fixed 1f59bc9a368fb0345134242ef1731270bbeea0cbef710692cb8d6b0f0dea3311 / 规则 1.1.0 / 范围=仅两处补丁点（0x3669B 两字节 + 清单 uiAccess 标记）。补丁点重定位 0x3686B→0x3669B。approval=candidate：试补凭本绑定；B 臂 6/6 验收后转正式（approved）。"
+      "approval": "approved",
+      "approval_note": "B 臂验收通过 2026-11-23 20:39（界面中文 + 录制落盘 unknown_2026.11.23-20.39.mp4，moov 完整；Failed=0；事务 TXN-20261123-182939-397dc5 已提交）；A 臂 6/6 失败签名见 D13/A臂执行记录"
     }
   ]
 }
