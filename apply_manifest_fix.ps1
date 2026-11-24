@@ -305,9 +305,12 @@ if (-not (Test-Path -LiteralPath $pyScript)) { Write-Host '缺少 patch_manifest
 # 0) 识别文件形态 + 原版备份门槛（2.0.0：sha_orig 是现场哈希，不再是清单登记值）
 #    先删除旧结果文件：--check 若失败（缺依赖/清单异常）不会写文件，
 #    残留的上一次结果会被误当成当前状态（曾导致误报 applied / 旧构建号）。
+#    完整 JSON 落在 last_fix_edit.json；窗口只显示摘要，故 Python stdout 静音
+#    （2.0.0 的 check 带 14 窗口 diagnostic，原样打印会刷屏）。stderr 仍可见，
+#    失败判定靠「结果文件是否由本次产生」，不靠屏幕输出。
 if (Test-Path -LiteralPath $resultPy) { Remove-Item -LiteralPath $resultPy -Force -ErrorAction SilentlyContinue }
 
-& $py $pyScript --check --out $resultPy | Write-Host
+& $py $pyScript --check --out $resultPy | Out-Null
 
 if (-not (Test-Path -LiteralPath $resultPy)) {
     $result.message = 'check_failed_no_output'
@@ -331,6 +334,33 @@ if ($st0.result -notin @('original_untouched', 'needs_manifest_fix', 'already_fi
 
     Read-Host '按回车关闭'
 
+    exit
+
+}
+
+# 2.0.0 幂等短路：文件已是终态时，备份门槛 / 停进程 / 重启引擎都不该发生。
+# 旧逻辑按 sha_orig 直查 .bak 找原版备份；2.0.0 的 sha_orig 是「当前文件现场哈希」，
+# fixed 态下永远匹配不到原版备份，会在下面的门槛误报 no_original_backup 并提前退出
+# （2026-11-24 实机双击复验发现）。幂等出口必须在任何写入前提前返回。
+if ($st0.result -eq 'already_fixed') {
+
+    $engine0 = Get-Process AMDRSServ -ErrorAction SilentlyContinue | Select-Object -First 1
+
+    $result.initial_state = 'already_fixed'
+    $result.build = $st0.build
+    $result.message = 'already_fixed_no_action'
+    if ($engine0) { $result.engine_pid = $engine0.Id }
+    Save-State
+
+    Write-Host ('当前状态: already_fixed | ' + $st0.message) -ForegroundColor Green
+    if ($engine0) {
+        Write-Host ('文件已是修复状态，引擎在运行（PID ' + $engine0.Id + '），无需动作。') -ForegroundColor Green
+    } else {
+        Write-Host '文件已是修复状态，无需动作。（引擎当前未运行；如需启动请用「重启引擎和界面.cmd」。）' -ForegroundColor Green
+    }
+    Write-Host '未改动任何文件、未停止或重启任何进程。' -ForegroundColor DarkGray
+
+    Read-Host '按回车关闭'
     exit
 
 }
@@ -381,7 +411,8 @@ if (-not $orig) {
 
     Save-State
 
-    Write-Host ('未找到原版备份（backup 目录里没有与当前文件 sha ' + $origSha.Substring(0, 12) + ' 吻合的 .bak），且当前文件不是原版、无法自动建档。未做任何修改。') -ForegroundColor Red
+    Write-Host ('写入前缺少原版备份：backup 目录里没有与当前文件 sha ' + $origSha.Substring(0, 12) + ' 吻合的 .bak，且当前文件不是原版、无法自动建档。未做任何修改。') -ForegroundColor Red
+    Write-Host '（该门槛只对需要改写的文件生效；已是修复状态的文件已在步骤 0 幂等退出，不受影响。）' -ForegroundColor DarkGray
 
     Read-Host '按回车关闭'
 
@@ -394,7 +425,7 @@ if (-not $orig) {
 # 1) 当前状态（只读）
 if (Test-Path -LiteralPath $resultPy) { Remove-Item -LiteralPath $resultPy -Force -ErrorAction SilentlyContinue }
 
-& $py $pyScript --check --out $resultPy | Write-Host
+& $py $pyScript --check --out $resultPy | Out-Null
 
 if (-not (Test-Path -LiteralPath $resultPy)) {
     $result.message = 'check_failed_no_output'
@@ -427,23 +458,21 @@ if ($st.result -notin @('original_untouched', 'needs_manifest_fix', 'already_fix
 
 }
 
-if (($st.result -eq 'already_fixed') -and (Get-Process AMDRSServ -ErrorAction SilentlyContinue)) {
+# 防御：两次 check 之间没有任何写入，状态不应变化；若意外出现终态，仍按零动作退出，
+# 绝不落到下面的「停进程 / 重启引擎」流程（管理员令牌形态会让录制失效）。
+if ($st.result -eq 'already_fixed') {
 
-    $result.message = 'already_fixed_engine_running'
-
-    $result.engine_pid = (Get-Process AMDRSServ | Select-Object -First 1).Id
-
+    $result.initial_state = 'already_fixed'
+    $result.message = 'already_fixed_no_action'
     Save-State
 
-    Write-Host ('文件已是修复状态，引擎在运行（PID ' + $result.engine_pid + '），无需动作。') -ForegroundColor Green
+    Write-Host ('当前状态: already_fixed | ' + $st.message) -ForegroundColor Green
+    Write-Host '文件已是修复状态，未改动任何文件、未停止或重启任何进程。' -ForegroundColor Green
 
     Read-Host '按回车关闭'
-
     exit
 
 }
-
-
 
 # 2) 必要时停进程解锁（界面会把引擎瞬时重拉，故需要时连界面一起停）
 
@@ -489,7 +518,7 @@ if (-not (Test-Writable)) {
 
 if ($st.result -ne 'already_fixed') {
 
-    & $py $pyScript --apply --out $resultPy | Write-Host
+    & $py $pyScript --apply --out $resultPy | Out-Null
 
     $edit = Get-Content -LiteralPath $resultPy -Raw -Encoding UTF8 | ConvertFrom-Json
 
