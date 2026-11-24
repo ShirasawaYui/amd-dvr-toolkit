@@ -29,8 +29,25 @@ import dvr_core as core  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = HERE / "build_manifest.json"
-DEFAULT_REGRESS_MANIFEST = (HERE.parent.parent / "实施记录" / "建设" /
-                            "testarea" / "manifest_regress.json")
+
+
+def _default_regress_manifest():
+    """回归夹具候选路径：仓库内置优先，兼容旧部署版布局。
+
+    夹具是 1.1.0 五代记录（regress / regress-p3 消费），非运行时必需。
+    """
+    candidates = [
+        HERE / "testarea" / "manifest_regress.json",
+        HERE.parent / "实施记录" / "建设" / "testarea" / "manifest_regress.json",
+        HERE.parent.parent / "实施记录" / "建设" / "testarea" / "manifest_regress.json",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return str(candidates[0])
+
+
+DEFAULT_REGRESS_MANIFEST = _default_regress_manifest()
 PY_SCRIPT = HERE / "patch_manifest.py"
 
 
