@@ -111,6 +111,15 @@ $curSha = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLower()
 
 # 2.0.0：不再靠「当前哈希命中某条构建的三哈希」反查代际。
 # 改为把 backup 里每份原版内存派生 patched/fixed，看哪份能推出当前文件。
+# backup 为空/不存在时直接给明确提示，避免误报 unknown_build（首次使用常见）
+if (-not (Test-Path -LiteralPath $backupDir) -or
+    -not (Get-ChildItem -LiteralPath $backupDir -Filter '*.bak' -ErrorAction SilentlyContinue)) {
+    $state.message = 'no_backup_yet'
+    Save-State $state
+    Write-Host 'backup\ 里还没有任何原版备份，无从配对。未做任何修改。' -ForegroundColor Yellow
+    Write-Host '（原版备份由「注入引擎修复补丁.cmd」在首次注入时自动创建；从未注入过就谈不上恢复。）' -ForegroundColor DarkGray
+    Read-Host '按回车关闭'; exit 1
+}
 $matchJson = Join-Path $PSScriptRoot 'restore_match.json'
 if (Test-Path -LiteralPath $matchJson) { Remove-Item -LiteralPath $matchJson -Force -ErrorAction SilentlyContinue }
 & $py (Join-Path $PSScriptRoot 'dvr_tool.py') match-backup --exe $target --backup-dir $backupDir --manifest $manifestPath --out $matchJson | Out-Null

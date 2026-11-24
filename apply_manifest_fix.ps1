@@ -383,6 +383,14 @@ if (-not $orig) {
 
     if ($st0.result -eq 'original_untouched') {
 
+        # backup 目录随脚本自动创建（仓库不携带，见 .gitignore）；
+        # 只在真正要写备份时建，already_fixed 幂等路径保持零文件操作
+        if (-not (Test-Path -LiteralPath $backupDir)) {
+
+            New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+
+        }
+
         $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
 
         $bakName = 'AMDRSServ.exe.orig.' + $ts + '.' + $origSha.Substring(0, 12) + '.bak'
